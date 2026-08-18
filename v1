@@ -1,4 +1,4 @@
--- Pixels Client (Mobile & Touch Optimized Edition - Full Version)
+-- Pixels Client (Mobile & Touch Optimized Edition - Full Version + Client Users ESP)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -46,7 +46,8 @@ local Settings = {
     Positions = {},
     KillSoundEnabled = true,
     KillSoundVolume = 0.8,
-    LastKillSoundIndex = 1
+    LastKillSoundIndex = 1,
+    ClientUsersESP = true -- Новая настройка для отображения пользователей скрипта
 }
 
 local avatarCache = {}
@@ -376,7 +377,7 @@ local VisualsContainer = Instance.new("ScrollingFrame", Main)
 VisualsContainer.Size = CombatContainer.Size
 VisualsContainer.Position = CombatContainer.Position
 VisualsContainer.BackgroundTransparency = 1
-VisualsContainer.CanvasSize = UDim2.new(0, 0, 0, 380)
+VisualsContainer.CanvasSize = UDim2.new(0, 0, 0, 420) -- Увеличено под новый тумблер
 VisualsContainer.ScrollBarThickness = 4
 VisualsContainer.Visible = false
 
@@ -602,6 +603,7 @@ CreateToggle(VisualsContainer, "Fullbright: ", UDim2.new(0, 0, 0, 230), "Fullbri
     end
 end)
 CreateToggle(VisualsContainer, "Watermark: ", UDim2.new(0, 0, 0, 270), "Watermark")
+CreateToggle(VisualsContainer, "Client Users ESP: ", UDim2.new(0, 0, 0, 310), "ClientUsersESP") -- Тумблер подсветки игроков со скриптом
 
 -- MUSIC TAB SETUP
 CreateToggle(MusicContainer, "Ignore Friends: ", UDim2.new(0, 0, 0, 5), "IgnoreFriends")
@@ -778,6 +780,10 @@ RangePart.Orientation = Vector3.new(0, 0, 90)
 
 local ESPFolder = Instance.new("Folder", Workspace)
 ESPFolder.Name = "PixelsESPFolder"
+
+-- Папка для ESP других пользователей скрипта
+local ClientUsersFolder = Instance.new("Folder", Workspace)
+ClientUsersFolder.Name = "PixelsClientUsersFolder"
 
 local Orbs = {}
 for i = 1, 3 do
@@ -1512,6 +1518,8 @@ local function SetupLocalChar(char)
     end
     task.wait(1)
     UpdateVisuals(char)
+    -- Помечаем нашего персонажа атрибутом, чтобы другие клиенты со скриптом видели нас
+    char:SetAttribute("PixelsClientUser", true)
 end
 
 table.insert(connections, LocalPlayer.CharacterAdded:Connect(SetupLocalChar))
@@ -1525,6 +1533,7 @@ local function Uninject()
     if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end
     if RangePart and RangePart.Parent then RangePart:Destroy() end
     if ESPFolder and ESPFolder.Parent then ESPFolder:Destroy() end
+    if ClientUsersFolder and ClientUsersFolder.Parent then ClientUsersFolder:Destroy() end
     if backgroundSound and backgroundSound.Parent then backgroundSound:Destroy() end
     if killSoundObject and killSoundObject.Parent then killSoundObject:Destroy() end
     
@@ -1533,6 +1542,7 @@ local function Uninject()
         if char:FindFirstChild("CustomWings") then char.CustomWings:Destroy() end
         if char:FindFirstChild("CustomHalo") then char.CustomHalo:Destroy() end
         if char:FindFirstChild("CustomTrail") then char.CustomTrail:Destroy() end
+        char:SetAttribute("PixelsClientUser", nil)
     end
     
     Lighting.Brightness = OriginalLighting.Brightness
@@ -1730,6 +1740,38 @@ table.insert(connections, RunService.RenderStepped:Connect(function()
         Lighting.Brightness = 2
         Lighting.ClockTime = 12
         Lighting.GlobalShadows = false
+    end
+
+    -- Логика отображения других пользователей скрипта (Client Users ESP)
+    for _, child in pairs(ClientUsersFolder:GetChildren()) do
+        child:Destroy()
+    end
+
+    if Settings.ClientUsersESP then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                local char = player.Character
+                local head = char:FindFirstChild("Head")
+                if char:GetAttribute("PixelsClientUser") == true and head then
+                    local billboard = Instance.new("BillboardGui")
+                    billboard.Name = "ClientUserTag"
+                    billboard.Size = UDim2.new(0, 120, 0, 30)
+                    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+                    billboard.AlwaysOnTop = true
+                    billboard.Parent = ClientUsersFolder
+                    billboard.Adornee = head
+
+                    local tagLabel = Instance.new("TextLabel", billboard)
+                    tagLabel.Size = UDim2.new(1, 0, 1, 0)
+                    tagLabel.BackgroundTransparency = 1
+                    tagLabel.Text = "⚡ [Pixels User]"
+                    tagLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
+                    tagLabel.TextStrokeTransparency = 0
+                    tagLabel.Font = Enum.Font.SourceSansBold
+                    tagLabel.TextSize = 14
+                end
+            end
+        end
     end
 
     local closestTarget = nil

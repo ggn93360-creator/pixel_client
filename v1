@@ -1,0 +1,1850 @@
+-- Pixels Client (Mobile & Touch Optimized Edition - Full Version)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
+local MarketplaceService = game:GetService("MarketplaceService")
+local SoundService = game:GetService("SoundService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+local CONFIG_FILE = "PixelsClientConfig.json"
+
+-- Сохранение оригинальных настроек освещения
+local OriginalLighting = {
+    Brightness = Lighting.Brightness,
+    ClockTime = Lighting.ClockTime,
+    GlobalShadows = Lighting.GlobalShadows
+}
+
+local Settings = {
+    AutoF = false,
+    Range = 12,
+    MaxHeightDiff = 6,
+    GUI_Open = false,
+    ReactionDelay = 0.0,
+    BlockDuration = 0.8,
+    WingsEnabled = false,
+    HaloEnabled = false,
+    TrailEnabled = false,
+    TargetESP = true,
+    ESPStyle = "Orbs",
+    TargetHUD = true,
+    SkillHUD = true,
+    KillstreakHUD = true,
+    MusicHUD = true,
+    Watermark = true,
+    Fullbright = false,
+    IgnoreFriends = true,
+    MusicVolume = 0.5,
+    MusicLooped = false,
+    LastTrackIndex = 0,
+    Killstreak = 0,
+    Positions = {},
+    KillSoundEnabled = true,
+    KillSoundVolume = 0.8,
+    LastKillSoundIndex = 1
+}
+
+local avatarCache = {}
+local friendCache = {}
+local connections = {}
+
+local function IsFriend(player)
+    if not player or not player.UserId then return false end
+    if friendCache[player.UserId] ~= nil then
+        return friendCache[player.UserId]
+    end
+    local success, result = pcall(function()
+        return LocalPlayer:IsFriendsWith(player.UserId)
+    end)
+    friendCache[player.UserId] = success and result or false
+    return friendCache[player.UserId]
+end
+
+local function GetAvatar(userId)
+    if avatarCache[userId] then return avatarCache[userId] end
+    local success, content = pcall(function()
+        return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+    end)
+    if success and content then
+        avatarCache[userId] = content
+        return content
+    end
+    return ""
+end
+
+local musicList = {
+    {name = "Default Chill", id = "rbxassetid://1848354536"},
+    {name = "Epic Adventure", id = "rbxassetid://1843378603"}
+}
+
+local killSoundList = {
+    {name = "Neverlose Hit", id = "rbxassetid://8679627751"},
+    {name = "Rust Headshot", id = "rbxassetid://1255040462"},
+    {name = "TF2 Bell", id = "rbxassetid://2868336143"},
+    {name = "COD Hitmarker", id = "rbxassetid://160432334"}
+}
+
+local currentPlayingIndex = 0
+local currentKillSoundIndex = Settings.LastKillSoundIndex or 1
+local currentVolume = Settings.MusicVolume
+local killSoundVolume = Settings.KillSoundVolume or 0.8
+local isLooped = Settings.MusicLooped
+
+local backgroundSound = Instance.new("Sound")
+backgroundSound.Name = "PixelsBackgroundMusic"
+backgroundSound.Volume = currentVolume
+backgroundSound.Looped = isLooped
+backgroundSound.Parent = SoundService
+
+local killSoundObject = Instance.new("Sound")
+killSoundObject.Name = "PixelsKillSound"
+killSoundObject.Volume = killSoundVolume
+killSoundObject.Looped = false
+killSoundObject.Parent = SoundService
+
+local function PlayKillSound(index, isPreview)
+    local item = killSoundList[index]
+    if item then
+        killSoundObject:Stop()
+        killSoundObject.SoundId = item.id
+        killSoundObject.Volume = killSoundVolume
+        killSoundObject.TimePosition = 0
+        killSoundObject:Play()
+    end
+end
+
+local function SaveConfig()
+    if not writefile then return end
+    pcall(function()
+        Settings.MusicVolume = currentVolume
+        Settings.MusicLooped = isLooped
+        Settings.LastTrackIndex = currentPlayingIndex
+        Settings.KillSoundVolume = killSoundVolume
+        Settings.LastKillSoundIndex = currentKillSoundIndex
+        
+        local data = {
+            Settings = Settings,
+            CustomMusicList = musicList,
+            CustomKillSoundList = killSoundList
+        }
+        writefile(CONFIG_FILE, HttpService:JSONEncode(data))
+    end)
+end
+
+local function LoadConfig()
+    if not readfile or not isfile or not isfile(CONFIG_FILE) then return end
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG_FILE))
+    end)
+    if success and type(result) == "table" then
+        if result.Settings then
+            for k, v in pairs(result.Settings) do
+                if Settings[k] ~= nil and k ~= "Killstreak" then Settings[k] = v end
+            end
+        end
+        if result.CustomMusicList then musicList = result.CustomMusicList end
+        if result.CustomKillSoundList then killSoundList = result.CustomKillSoundList end
+        
+        currentVolume = Settings.MusicVolume or 0.5
+        killSoundVolume = Settings.KillSoundVolume or 0.8
+        isLooped = Settings.MusicLooped or false
+        currentPlayingIndex = Settings.LastTrackIndex or 0
+        currentKillSoundIndex = Settings.LastKillSoundIndex or 1
+        
+        backgroundSound.Volume = currentVolume
+        backgroundSound.Looped = isLooped
+        killSoundObject.Volume = killSoundVolume
+    end
+end
+
+LoadConfig()
+
+local isBlocking = false
+local currentTarget = nil
+local currentBlockTrack = nil
+local sessionStartTime = tick()
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PixelsSmartClientUltimate"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 999999
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.Parent = CoreGui
+
+local function MakeDraggable(frame, handle, configKey)
+    handle = handle or frame
+    local dragging, dragInput, dragStart, startPos
+
+    if configKey and Settings.Positions[configKey] then
+        local p = Settings.Positions[configKey]
+        frame.Position = UDim2.new(p.XS, p.XO, p.YS, p.YO)
+    end
+
+    table.insert(connections, handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            
+            local endedConn
+            endedConn = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    if endedConn then endedConn:Disconnect() end
+                    if configKey then
+                        Settings.Positions[configKey] = {
+                            XS = frame.Position.X.Scale, XO = frame.Position.X.Offset,
+                            YS = frame.Position.Y.Scale, YO = frame.Position.Y.Offset
+                        }
+                        SaveConfig()
+                    end
+                end
+            end)
+            table.insert(connections, endedConn)
+        end
+    end))
+
+    table.insert(connections, handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end))
+
+    table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, 
+                startPos.X.Offset + delta.X, 
+                startPos.Y.Scale, 
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end))
+end
+
+local function UpdateVisuals(char)
+    if not char then return end
+    local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+    local head = char:FindFirstChild("Head")
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    
+    if char:FindFirstChild("CustomWings") then char.CustomWings:Destroy() end
+    if char:FindFirstChild("CustomHalo") then char.CustomHalo:Destroy() end
+    if char:FindFirstChild("CustomTrail") then char.CustomTrail:Destroy() end
+    
+    if Settings.WingsEnabled and torso then
+        local wingModel = Instance.new("Model")
+        wingModel.Name = "CustomWings"
+        wingModel.Parent = char
+        for i = 1, 8 do
+            local part = Instance.new("Part")
+            part.Size = Vector3.new(0.5, 3.2, 0.2)
+            part.CFrame = torso.CFrame * CFrame.new(0, 0.5, 0.6) * CFrame.Angles(0, 0, math.rad(i * 22 - 90))
+            part.Anchored = false
+            part.CanCollide = false
+            part.Material = Enum.Material.SmoothPlastic
+            part.Color = Color3.fromRGB(140, 0, 0)
+            part.Parent = wingModel
+            local weld = Instance.new("WeldConstraint", part)
+            weld.Part0 = torso
+            weld.Part1 = part
+        end
+    end
+    
+    if Settings.HaloEnabled and head then
+        local haloPart = Instance.new("Part")
+        haloPart.Name = "CustomHalo"
+        haloPart.Size = Vector3.new(2.2, 0.15, 2.2)
+        haloPart.Shape = Enum.PartType.Cylinder
+        haloPart.CFrame = head.CFrame * CFrame.new(0, 1.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
+        haloPart.Anchored = false
+        haloPart.CanCollide = false
+        haloPart.Material = Enum.Material.Neon
+        haloPart.Color = Color3.fromRGB(255, 215, 0)
+        haloPart.Parent = char
+        local weld = Instance.new("WeldConstraint", haloPart)
+        weld.Part0 = head
+        weld.Part1 = haloPart
+    end
+    
+    if Settings.TrailEnabled and rootPart then
+        local att0 = Instance.new("Attachment", rootPart)
+        att0.Position = Vector3.new(0, -1, 0)
+        local att1 = Instance.new("Attachment", rootPart)
+        att1.Position = Vector3.new(0, 1, 0)
+        local trail = Instance.new("Trail")
+        trail.Name = "CustomTrail"
+        trail.Attachment0 = att0
+        trail.Attachment1 = att1
+        trail.Color = ColorSequence.new(Color3.fromRGB(255, 150, 0))
+        trail.Lifetime = 0.5
+        trail.Parent = rootPart
+    end
+end
+
+-- Кнопка переключения меню
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Name = "MobileToggleBtn"
+ToggleBtn.Size = UDim2.new(0, 45, 0, 45)
+ToggleBtn.Position = UDim2.new(0, 10, 0.35, 0)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+ToggleBtn.Text = "PX"
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 150, 0)
+ToggleBtn.Font = Enum.Font.SourceSansBold
+ToggleBtn.TextSize = 18
+ToggleBtn.Parent = ScreenGui
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(1, 0)
+
+local ToggleStroke = Instance.new("UIStroke", ToggleBtn)
+ToggleStroke.Color = Color3.fromRGB(255, 150, 0)
+ToggleStroke.Thickness = 2
+
+MakeDraggable(ToggleBtn, nil, "ToggleBtn")
+
+-- Главное Окно
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 350, 0, 370)
+Main.Position = UDim2.new(0.5, -175, 0.5, -185)
+Main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+Main.Visible = Settings.GUI_Open
+Main.Parent = ScreenGui
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+
+table.insert(connections, ToggleBtn.MouseButton1Click:Connect(function()
+    Settings.GUI_Open = not Settings.GUI_Open
+    Main.Visible = Settings.GUI_Open
+    SaveConfig()
+end))
+
+local MainStroke = Instance.new("UIStroke", Main)
+MainStroke.Color = Color3.fromRGB(255, 150, 0)
+MainStroke.Thickness = 1.5
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Title.Text = "Pixels Client Mobile"
+Title.TextColor3 = Color3.fromRGB(255, 150, 0)
+Title.TextScaled = true
+Title.Font = Enum.Font.SourceSansBold
+Title.Parent = Main
+Instance.new("UICorner", Title).CornerRadius = UDim.new(0, 10)
+
+MakeDraggable(Main, Title, "MainWindow")
+
+-- Вкладки
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, -20, 0, 30)
+TabBar.Position = UDim2.new(0, 10, 0, 42)
+TabBar.BackgroundTransparency = 1
+TabBar.Parent = Main
+
+local function CreateTabBtn(text, pos, active)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.235, 0, 1, 0)
+    btn.Position = pos
+    btn.BackgroundColor3 = active and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+    btn.Text = text
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextScaled = true
+    btn.Font = Enum.Font.SourceSansBold
+    btn.Parent = TabBar
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local CombatTabBtn = CreateTabBtn("Combat", UDim2.new(0, 0, 0, 0), true)
+local VisualsTabBtn = CreateTabBtn("Visuals", UDim2.new(0.255, 0, 0, 0), false)
+local MusicTabBtn = CreateTabBtn("Music", UDim2.new(0.510, 0, 0, 0), false)
+local KillSoundTabBtn = CreateTabBtn("KillSound", UDim2.new(0.765, 0, 0, 0), false)
+
+local CombatContainer = Instance.new("ScrollingFrame", Main)
+CombatContainer.Size = UDim2.new(1, -20, 1, -80)
+CombatContainer.Position = UDim2.new(0, 10, 0, 75)
+CombatContainer.BackgroundTransparency = 1
+CombatContainer.CanvasSize = UDim2.new(0, 0, 0, 490)
+CombatContainer.ScrollBarThickness = 4
+
+local VisualsContainer = Instance.new("ScrollingFrame", Main)
+VisualsContainer.Size = CombatContainer.Size
+VisualsContainer.Position = CombatContainer.Position
+VisualsContainer.BackgroundTransparency = 1
+VisualsContainer.CanvasSize = UDim2.new(0, 0, 0, 380)
+VisualsContainer.ScrollBarThickness = 4
+VisualsContainer.Visible = false
+
+local MusicContainer = Instance.new("ScrollingFrame", Main)
+MusicContainer.Size = CombatContainer.Size
+MusicContainer.Position = CombatContainer.Position
+MusicContainer.BackgroundTransparency = 1
+MusicContainer.CanvasSize = UDim2.new(0, 0, 0, 320)
+MusicContainer.ScrollBarThickness = 4
+MusicContainer.Visible = false
+
+local KillSoundContainer = Instance.new("ScrollingFrame", Main)
+KillSoundContainer.Size = CombatContainer.Size
+KillSoundContainer.Position = CombatContainer.Position
+KillSoundContainer.BackgroundTransparency = 1
+KillSoundContainer.CanvasSize = UDim2.new(0, 0, 0, 380)
+KillSoundContainer.ScrollBarThickness = 4
+KillSoundContainer.Visible = false
+
+local function SwitchTab(tabIndex)
+    CombatTabBtn.BackgroundColor3 = tabIndex == 1 and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+    VisualsTabBtn.BackgroundColor3 = tabIndex == 2 and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+    MusicTabBtn.BackgroundColor3 = tabIndex == 3 and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+    KillSoundTabBtn.BackgroundColor3 = tabIndex == 4 and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+    
+    CombatContainer.Visible = (tabIndex == 1)
+    VisualsContainer.Visible = (tabIndex == 2)
+    MusicContainer.Visible = (tabIndex == 3)
+    KillSoundContainer.Visible = (tabIndex == 4)
+end
+
+table.insert(connections, CombatTabBtn.MouseButton1Click:Connect(function() SwitchTab(1) end))
+table.insert(connections, VisualsTabBtn.MouseButton1Click:Connect(function() SwitchTab(2) end))
+table.insert(connections, MusicTabBtn.MouseButton1Click:Connect(function() SwitchTab(3) end))
+table.insert(connections, KillSoundTabBtn.MouseButton1Click:Connect(function() SwitchTab(4) end))
+
+local function CreateToggle(parent, text, pos, settingKey, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 35)
+    btn.Position = pos
+    btn.BackgroundColor3 = Settings[settingKey] and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+    btn.Text = text .. (Settings[settingKey] and "ON" or "OFF")
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.TextScaled = true
+    btn.Parent = parent
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    
+    table.insert(connections, btn.MouseButton1Click:Connect(function()
+        Settings[settingKey] = not Settings[settingKey]
+        btn.Text = text .. (Settings[settingKey] and "ON" or "OFF")
+        btn.BackgroundColor3 = Settings[settingKey] and Color3.fromRGB(150, 80, 0) or Color3.fromRGB(45, 45, 45)
+        SaveConfig()
+        if callback then callback() end
+    end))
+    return btn
+end
+
+-- COMBAT TAB SETUP
+CreateToggle(CombatContainer, "Auto Parry & Aim: ", UDim2.new(0, 0, 0, 5), "AutoF")
+
+local RangeLabel = Instance.new("TextLabel", CombatContainer)
+RangeLabel.Size = UDim2.new(1, 0, 0, 20)
+RangeLabel.Position = UDim2.new(0, 0, 0, 45)
+RangeLabel.BackgroundTransparency = 1
+RangeLabel.Text = "Range: " .. Settings.Range
+RangeLabel.TextColor3 = Color3.new(1,1,1)
+RangeLabel.TextScaled = true
+
+local Plus = Instance.new("TextButton", CombatContainer)
+Plus.Size = UDim2.new(0.48, 0, 0, 30)
+Plus.Position = UDim2.new(0, 0, 0, 70)
+Plus.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+Plus.Text = "+ Range"
+Plus.TextColor3 = Color3.new(1,1,1)
+Plus.TextScaled = true
+Instance.new("UICorner", Plus).CornerRadius = UDim.new(0, 6)
+
+local Minus = Instance.new("TextButton", CombatContainer)
+Minus.Size = UDim2.new(0.48, 0, 0, 30)
+Minus.Position = UDim2.new(0.52, 0, 0, 70)
+Minus.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+Minus.Text = "- Range"
+Minus.TextColor3 = Color3.new(1,1,1)
+Minus.TextScaled = true
+Instance.new("UICorner", Minus).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, Plus.MouseButton1Click:Connect(function()
+    Settings.Range = math.clamp(Settings.Range + 1, 4, 30)
+    RangeLabel.Text = "Range: " .. Settings.Range
+    SaveConfig()
+end))
+
+table.insert(connections, Minus.MouseButton1Click:Connect(function()
+    Settings.Range = math.clamp(Settings.Range - 1, 4, 30)
+    RangeLabel.Text = "Range: " .. Settings.Range
+    SaveConfig()
+end))
+
+local DelayLabel = Instance.new("TextLabel", CombatContainer)
+DelayLabel.Size = UDim2.new(1, 0, 0, 20)
+DelayLabel.Position = UDim2.new(0, 0, 0, 105)
+DelayLabel.BackgroundTransparency = 1
+DelayLabel.Text = "Reaction Delay: " .. string.format("%.2f", Settings.ReactionDelay) .. "s"
+DelayLabel.TextColor3 = Color3.new(1,1,1)
+DelayLabel.TextScaled = true
+
+local PlusDelay = Instance.new("TextButton", CombatContainer)
+PlusDelay.Size = UDim2.new(0.48, 0, 0, 30)
+PlusDelay.Position = UDim2.new(0, 0, 0, 130)
+PlusDelay.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+PlusDelay.Text = "+ Delay (0.05)"
+PlusDelay.TextColor3 = Color3.new(1,1,1)
+PlusDelay.TextScaled = true
+Instance.new("UICorner", PlusDelay).CornerRadius = UDim.new(0, 6)
+
+local MinusDelay = Instance.new("TextButton", CombatContainer)
+MinusDelay.Size = UDim2.new(0.48, 0, 0, 30)
+MinusDelay.Position = UDim2.new(0.52, 0, 0, 130)
+MinusDelay.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+MinusDelay.Text = "- Delay (0.05)"
+MinusDelay.TextColor3 = Color3.new(1,1,1)
+MinusDelay.TextScaled = true
+Instance.new("UICorner", MinusDelay).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, PlusDelay.MouseButton1Click:Connect(function()
+    Settings.ReactionDelay = math.clamp(math.round((Settings.ReactionDelay + 0.05) * 100) / 100, 0, 5)
+    DelayLabel.Text = "Reaction Delay: " .. string.format("%.2f", Settings.ReactionDelay) .. "s"
+    SaveConfig()
+end))
+
+table.insert(connections, MinusDelay.MouseButton1Click:Connect(function()
+    Settings.ReactionDelay = math.clamp(math.round((Settings.ReactionDelay - 0.05) * 100) / 100, 0, 5)
+    DelayLabel.Text = "Reaction Delay: " .. string.format("%.2f", Settings.ReactionDelay) .. "s"
+    SaveConfig()
+end))
+
+local DurLabel = Instance.new("TextLabel", CombatContainer)
+DurLabel.Size = UDim2.new(1, 0, 0, 20)
+DurLabel.Position = UDim2.new(0, 0, 0, 165)
+DurLabel.BackgroundTransparency = 1
+DurLabel.Text = "Block Duration: " .. string.format("%.2f", Settings.BlockDuration) .. "s"
+DurLabel.TextColor3 = Color3.new(1,1,1)
+DurLabel.TextScaled = true
+
+local PlusDur = Instance.new("TextButton", CombatContainer)
+PlusDur.Size = UDim2.new(0.48, 0, 0, 30)
+PlusDur.Position = UDim2.new(0, 0, 0, 190)
+PlusDur.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+PlusDur.Text = "+ Duration (0.05)"
+PlusDur.TextColor3 = Color3.new(1,1,1)
+PlusDur.TextScaled = true
+Instance.new("UICorner", PlusDur).CornerRadius = UDim.new(0, 6)
+
+local MinusDur = Instance.new("TextButton", CombatContainer)
+MinusDur.Size = UDim2.new(0.48, 0, 0, 30)
+MinusDur.Position = UDim2.new(0.52, 0, 0, 190)
+MinusDur.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+MinusDur.Text = "- Duration (0.05)"
+MinusDur.TextColor3 = Color3.new(1,1,1)
+MinusDur.TextScaled = true
+Instance.new("UICorner", MinusDur).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, PlusDur.MouseButton1Click:Connect(function()
+    Settings.BlockDuration = math.clamp(math.round((Settings.BlockDuration + 0.05) * 100) / 100, 0.05, 5)
+    DurLabel.Text = "Block Duration: " .. string.format("%.2f", Settings.BlockDuration) .. "s"
+    SaveConfig()
+end))
+
+table.insert(connections, MinusDur.MouseButton1Click:Connect(function()
+    Settings.BlockDuration = math.clamp(math.round((Settings.BlockDuration - 0.05) * 100) / 100, 0.05, 5)
+    DurLabel.Text = "Block Duration: " .. string.format("%.2f", Settings.BlockDuration) .. "s"
+    SaveConfig()
+end))
+
+CreateToggle(CombatContainer, "Target HUD: ", UDim2.new(0, 0, 0, 230), "TargetHUD")
+CreateToggle(CombatContainer, "Skill Cooldown HUD: ", UDim2.new(0, 0, 0, 275), "SkillHUD")
+CreateToggle(CombatContainer, "Killstreak HUD: ", UDim2.new(0, 0, 0, 320), "KillstreakHUD")
+CreateToggle(CombatContainer, "Music Player HUD: ", UDim2.new(0, 0, 0, 365), "MusicHUD")
+
+-- VISUALS TAB SETUP
+CreateToggle(VisualsContainer, "Target ESP: ", UDim2.new(0, 0, 0, 5), "TargetESP")
+
+local ESPStyleLabel = Instance.new("TextLabel", VisualsContainer)
+ESPStyleLabel.Size = UDim2.new(1, 0, 0, 20)
+ESPStyleLabel.Position = UDim2.new(0, 0, 0, 45)
+ESPStyleLabel.BackgroundTransparency = 1
+ESPStyleLabel.Text = "ESP Style: " .. Settings.ESPStyle
+ESPStyleLabel.TextColor3 = Color3.new(1,1,1)
+ESPStyleLabel.TextScaled = true
+
+local StyleBtn = Instance.new("TextButton", VisualsContainer)
+StyleBtn.Size = UDim2.new(1, 0, 0, 30)
+StyleBtn.Position = UDim2.new(0, 0, 0, 70)
+StyleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+StyleBtn.Text = "Change Style [ Orbs / Ring / Box / Arrows ]"
+StyleBtn.TextColor3 = Color3.new(1,1,1)
+StyleBtn.TextScaled = true
+Instance.new("UICorner", StyleBtn).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, StyleBtn.MouseButton1Click:Connect(function()
+    if Settings.ESPStyle == "Orbs" then Settings.ESPStyle = "Ring"
+    elseif Settings.ESPStyle == "Ring" then Settings.ESPStyle = "Box"
+    elseif Settings.ESPStyle == "Box" then Settings.ESPStyle = "Arrows"
+    else Settings.ESPStyle = "Orbs" end
+    ESPStyleLabel.Text = "ESP Style: " .. Settings.ESPStyle
+    SaveConfig()
+end))
+
+CreateToggle(VisualsContainer, "Custom Wings: ", UDim2.new(0, 0, 0, 110), "WingsEnabled", function()
+    if LocalPlayer.Character then UpdateVisuals(LocalPlayer.Character) end
+end)
+CreateToggle(VisualsContainer, "Custom Halo: ", UDim2.new(0, 0, 0, 150), "HaloEnabled", function()
+    if LocalPlayer.Character then UpdateVisuals(LocalPlayer.Character) end
+end)
+CreateToggle(VisualsContainer, "Player Trail: ", UDim2.new(0, 0, 0, 190), "TrailEnabled", function()
+    if LocalPlayer.Character then UpdateVisuals(LocalPlayer.Character) end
+end)
+CreateToggle(VisualsContainer, "Fullbright: ", UDim2.new(0, 0, 0, 230), "Fullbright", function()
+    if not Settings.Fullbright then
+        Lighting.Brightness = OriginalLighting.Brightness
+        Lighting.ClockTime = OriginalLighting.ClockTime
+        Lighting.GlobalShadows = OriginalLighting.GlobalShadows
+    end
+end)
+CreateToggle(VisualsContainer, "Watermark: ", UDim2.new(0, 0, 0, 270), "Watermark")
+
+-- MUSIC TAB SETUP
+CreateToggle(MusicContainer, "Ignore Friends: ", UDim2.new(0, 0, 0, 5), "IgnoreFriends")
+
+local OpenMusicMenuBtn = Instance.new("TextButton", MusicContainer)
+OpenMusicMenuBtn.Size = UDim2.new(1, 0, 0, 35)
+OpenMusicMenuBtn.Position = UDim2.new(0, 0, 0, 45)
+OpenMusicMenuBtn.BackgroundColor3 = Color3.fromRGB(29, 185, 84)
+OpenMusicMenuBtn.Text = "🎵 Відкрити меню музики"
+OpenMusicMenuBtn.TextColor3 = Color3.new(1,1,1)
+OpenMusicMenuBtn.Font = Enum.Font.SourceSansBold
+OpenMusicMenuBtn.TextSize = 14
+Instance.new("UICorner", OpenMusicMenuBtn).CornerRadius = UDim.new(0, 6)
+
+local MusicAddTitle = Instance.new("TextLabel", MusicContainer)
+MusicAddTitle.Size = UDim2.new(1, 0, 0, 20)
+MusicAddTitle.Position = UDim2.new(0, 0, 0, 90)
+MusicAddTitle.BackgroundTransparency = 1
+MusicAddTitle.Text = "Add Custom Music ID"
+MusicAddTitle.TextColor3 = Color3.fromRGB(29, 185, 84)
+MusicAddTitle.Font = Enum.Font.SourceSansBold
+MusicAddTitle.TextSize = 13
+MusicAddTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local TrackNameBox = Instance.new("TextBox", MusicContainer)
+TrackNameBox.Size = UDim2.new(1, 0, 0, 30)
+TrackNameBox.Position = UDim2.new(0, 0, 0, 115)
+TrackNameBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+TrackNameBox.PlaceholderText = "Track Name"
+TrackNameBox.Text = ""
+TrackNameBox.TextColor3 = Color3.new(1,1,1)
+TrackNameBox.Font = Enum.Font.SourceSans
+TrackNameBox.TextSize = 13
+Instance.new("UICorner", TrackNameBox).CornerRadius = UDim.new(0, 6)
+
+local TrackIDBox = Instance.new("TextBox", MusicContainer)
+TrackIDBox.Size = UDim2.new(1, 0, 0, 30)
+TrackIDBox.Position = UDim2.new(0, 0, 0, 150)
+TrackIDBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+TrackIDBox.PlaceholderText = "Sound ID"
+TrackIDBox.Text = ""
+TrackIDBox.TextColor3 = Color3.new(1,1,1)
+TrackIDBox.Font = Enum.Font.SourceSans
+TrackIDBox.TextSize = 13
+Instance.new("UICorner", TrackIDBox).CornerRadius = UDim.new(0, 6)
+
+local AddTrackBtn = Instance.new("TextButton", MusicContainer)
+AddTrackBtn.Size = UDim2.new(1, 0, 0, 30)
+AddTrackBtn.Position = UDim2.new(0, 0, 0, 185)
+AddTrackBtn.BackgroundColor3 = Color3.fromRGB(29, 185, 84)
+AddTrackBtn.Text = "Add Track"
+AddTrackBtn.TextColor3 = Color3.new(1,1,1)
+AddTrackBtn.Font = Enum.Font.SourceSansBold
+AddTrackBtn.TextSize = 13
+Instance.new("UICorner", AddTrackBtn).CornerRadius = UDim.new(0, 6)
+
+local UninjectBtn = Instance.new("TextButton", MusicContainer)
+UninjectBtn.Size = UDim2.new(1, 0, 0, 35)
+UninjectBtn.Position = UDim2.new(0, 0, 0, 225)
+UninjectBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+UninjectBtn.Text = "UNINJECT SCRIPT"
+UninjectBtn.TextColor3 = Color3.new(1,1,1)
+UninjectBtn.TextScaled = true
+UninjectBtn.Font = Enum.Font.SourceSansBold
+Instance.new("UICorner", UninjectBtn).CornerRadius = UDim.new(0, 6)
+
+-- KILL SOUND TAB SETUP
+CreateToggle(KillSoundContainer, "Kill Sound Active: ", UDim2.new(0, 0, 0, 5), "KillSoundEnabled")
+
+local OpenKillSoundMenuBtn = Instance.new("TextButton", KillSoundContainer)
+OpenKillSoundMenuBtn.Size = UDim2.new(1, 0, 0, 35)
+OpenKillSoundMenuBtn.Position = UDim2.new(0, 0, 0, 45)
+OpenKillSoundMenuBtn.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+OpenKillSoundMenuBtn.Text = "🔔 Меню Kill Sound"
+OpenKillSoundMenuBtn.TextColor3 = Color3.new(1,1,1)
+OpenKillSoundMenuBtn.Font = Enum.Font.SourceSansBold
+OpenKillSoundMenuBtn.TextSize = 14
+Instance.new("UICorner", OpenKillSoundMenuBtn).CornerRadius = UDim.new(0, 6)
+
+local KillSoundAddTitle = Instance.new("TextLabel", KillSoundContainer)
+KillSoundAddTitle.Size = UDim2.new(1, 0, 0, 20)
+KillSoundAddTitle.Position = UDim2.new(0, 0, 0, 90)
+KillSoundAddTitle.BackgroundTransparency = 1
+KillSoundAddTitle.Text = "Add Custom Kill Sound ID"
+KillSoundAddTitle.TextColor3 = Color3.fromRGB(255, 150, 0)
+KillSoundAddTitle.Font = Enum.Font.SourceSansBold
+KillSoundAddTitle.TextSize = 13
+KillSoundAddTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local KSNameBox = Instance.new("TextBox", KillSoundContainer)
+KSNameBox.Size = UDim2.new(1, 0, 0, 30)
+KSNameBox.Position = UDim2.new(0, 0, 0, 115)
+KSNameBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+KSNameBox.PlaceholderText = "Sound Name"
+KSNameBox.Text = ""
+KSNameBox.TextColor3 = Color3.new(1,1,1)
+KSNameBox.Font = Enum.Font.SourceSans
+KSNameBox.TextSize = 13
+Instance.new("UICorner", KSNameBox).CornerRadius = UDim.new(0, 6)
+
+local KSIDBox = Instance.new("TextBox", KillSoundContainer)
+KSIDBox.Size = UDim2.new(1, 0, 0, 30)
+KSIDBox.Position = UDim2.new(0, 0, 0, 150)
+KSIDBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+KSIDBox.PlaceholderText = "Sound ID"
+KSIDBox.Text = ""
+KSIDBox.TextColor3 = Color3.new(1,1,1)
+KSIDBox.Font = Enum.Font.SourceSans
+KSIDBox.TextSize = 13
+Instance.new("UICorner", KSIDBox).CornerRadius = UDim.new(0, 6)
+
+local AddKSBtn = Instance.new("TextButton", KillSoundContainer)
+AddKSBtn.Size = UDim2.new(1, 0, 0, 30)
+AddKSBtn.Position = UDim2.new(0, 0, 0, 185)
+AddKSBtn.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+AddKSBtn.Text = "Add Kill Sound"
+AddKSBtn.TextColor3 = Color3.new(1,1,1)
+AddKSBtn.Font = Enum.Font.SourceSansBold
+AddKSBtn.TextSize = 13
+Instance.new("UICorner", AddKSBtn).CornerRadius = UDim.new(0, 6)
+
+local KSVolLabel = Instance.new("TextLabel", KillSoundContainer)
+KSVolLabel.Size = UDim2.new(1, 0, 0, 20)
+KSVolLabel.Position = UDim2.new(0, 0, 0, 225)
+KSVolLabel.BackgroundTransparency = 1
+KSVolLabel.Text = "Kill Sound Volume: " .. math.floor(killSoundVolume * 100) .. "%"
+KSVolLabel.TextColor3 = Color3.new(1,1,1)
+KSVolLabel.TextScaled = true
+
+local PlusKSVol = Instance.new("TextButton", KillSoundContainer)
+PlusKSVol.Size = UDim2.new(0.48, 0, 0, 30)
+PlusKSVol.Position = UDim2.new(0, 0, 0, 250)
+PlusKSVol.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+PlusKSVol.Text = "+ Volume"
+PlusKSVol.TextColor3 = Color3.new(1,1,1)
+PlusKSVol.TextScaled = true
+Instance.new("UICorner", PlusKSVol).CornerRadius = UDim.new(0, 6)
+
+local MinusKSVol = Instance.new("TextButton", KillSoundContainer)
+MinusKSVol.Size = UDim2.new(0.48, 0, 0, 30)
+MinusKSVol.Position = UDim2.new(0.52, 0, 0, 250)
+MinusKSVol.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+MinusKSVol.Text = "- Volume"
+MinusKSVol.TextColor3 = Color3.new(1,1,1)
+MinusKSVol.TextScaled = true
+Instance.new("UICorner", MinusKSVol).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, PlusKSVol.MouseButton1Click:Connect(function()
+    killSoundVolume = math.clamp(killSoundVolume + 0.1, 0, 1)
+    killSoundObject.Volume = killSoundVolume
+    KSVolLabel.Text = "Kill Sound Volume: " .. math.floor(killSoundVolume * 100) .. "%"
+    SaveConfig()
+end))
+
+table.insert(connections, MinusKSVol.MouseButton1Click:Connect(function()
+    killSoundVolume = math.clamp(killSoundVolume - 0.1, 0, 1)
+    killSoundObject.Volume = killSoundVolume
+    KSVolLabel.Text = "Kill Sound Volume: " .. math.floor(killSoundVolume * 100) .. "%"
+    SaveConfig()
+end))
+
+-- Игровые 3D Элементы и ESP
+local RangePart = Instance.new("Part")
+RangePart.Name = "AutoFRange"
+RangePart.Anchored = true
+RangePart.CanCollide = false
+RangePart.CanQuery = false
+RangePart.Material = Enum.Material.ForceField
+RangePart.Color = Color3.fromRGB(255, 150, 0)
+RangePart.Transparency = 0.6
+RangePart.Shape = Enum.PartType.Cylinder
+RangePart.Parent = Workspace
+RangePart.Orientation = Vector3.new(0, 0, 90)
+
+local ESPFolder = Instance.new("Folder", Workspace)
+ESPFolder.Name = "PixelsESPFolder"
+
+local Orbs = {}
+for i = 1, 3 do
+    local orb = Instance.new("Part")
+    orb.Shape = Enum.PartType.Ball
+    orb.Size = Vector3.new(0.8, 0.8, 0.8)
+    orb.Material = Enum.Material.Neon
+    orb.Color = Color3.fromRGB(255, 50, 50)
+    orb.Anchored = true
+    orb.CanCollide = false
+    orb.Transparency = 1
+    orb.Parent = ESPFolder
+    table.insert(Orbs, orb)
+end
+
+local ESPRing = Instance.new("Part")
+ESPRing.Shape = Enum.PartType.Cylinder
+ESPRing.Size = Vector3.new(0.2, 4, 4)
+ESPRing.Material = Enum.Material.Neon
+ESPRing.Color = Color3.fromRGB(255, 100, 0)
+ESPRing.Anchored = true
+ESPRing.CanCollide = false
+ESPRing.Transparency = 1
+ESPRing.Orientation = Vector3.new(0, 0, 90)
+ESPRing.Parent = ESPFolder
+
+local ESPHighlight = Instance.new("Highlight")
+ESPHighlight.Name = "TargetHighlight"
+ESPHighlight.FillColor = Color3.fromRGB(255, 50, 50)
+ESPHighlight.FillTransparency = 0.7
+ESPHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+ESPHighlight.OutlineTransparency = 0
+ESPHighlight.Enabled = false
+ESPHighlight.Parent = ESPFolder
+
+local ESPArrow = Instance.new("Part")
+ESPArrow.Size = Vector3.new(1.5, 0.2, 1.5)
+ESPArrow.Shape = Enum.PartType.Block
+ESPArrow.Material = Enum.Material.Neon
+ESPArrow.Color = Color3.fromRGB(255, 50, 50)
+ESPArrow.Anchored = true
+ESPArrow.CanCollide = false
+ESPArrow.Transparency = 1
+ESPArrow.Parent = ESPFolder
+
+-- TARGET HUD
+local HUDFrame = Instance.new("Frame")
+HUDFrame.Size = UDim2.new(0, 220, 0, 60)
+HUDFrame.Position = UDim2.new(0.5, -110, 0, 15)
+HUDFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+HUDFrame.Visible = false
+HUDFrame.Parent = ScreenGui
+Instance.new("UICorner", HUDFrame).CornerRadius = UDim.new(0, 8)
+local HUDStroke = Instance.new("UIStroke", HUDFrame)
+HUDStroke.Color = Color3.fromRGB(255, 50, 50)
+HUDStroke.Thickness = 2
+
+MakeDraggable(HUDFrame, nil, "TargetHUD")
+
+local AvatarImage = Instance.new("ImageLabel", HUDFrame)
+AvatarImage.Size = UDim2.new(0, 40, 0, 40)
+AvatarImage.Position = UDim2.new(0, 8, 0, 10)
+AvatarImage.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+Instance.new("UICorner", AvatarImage).CornerRadius = UDim.new(1, 0)
+
+local HUDName = Instance.new("TextLabel", HUDFrame)
+HUDName.Size = UDim2.new(0, 150, 0, 18)
+HUDName.Position = UDim2.new(0, 55, 0, 8)
+HUDName.BackgroundTransparency = 1
+HUDName.Text = "No Target"
+HUDName.TextColor3 = Color3.new(1,1,1)
+HUDName.Font = Enum.Font.SourceSansBold
+HUDName.TextScaled = true
+HUDName.TextXAlignment = Enum.TextXAlignment.Left
+
+local HealthBG = Instance.new("Frame", HUDFrame)
+HealthBG.Size = UDim2.new(0, 150, 0, 8)
+HealthBG.Position = UDim2.new(0, 55, 0, 30)
+HealthBG.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+Instance.new("UICorner", HealthBG).CornerRadius = UDim.new(1, 0)
+
+local HealthFill = Instance.new("Frame", HealthBG)
+HealthFill.Size = UDim2.new(1, 0, 1, 0)
+HealthFill.BackgroundColor3 = Color3.fromRGB(50, 255, 50)
+Instance.new("UICorner", HealthFill).CornerRadius = UDim.new(1, 0)
+
+local HUDDist = Instance.new("TextLabel", HUDFrame)
+HUDDist.Size = UDim2.new(0, 150, 0, 14)
+HUDDist.Position = UDim2.new(0, 55, 0, 42)
+HUDDist.BackgroundTransparency = 1
+HUDDist.Text = "Dist: 0 studs"
+HUDDist.TextColor3 = Color3.fromRGB(200, 200, 200)
+HUDDist.Font = Enum.Font.SourceSans
+HUDDist.TextScaled = true
+HUDDist.TextXAlignment = Enum.TextXAlignment.Left
+
+-- KILLSTREAK HUD
+local KillstreakHUDFrame = Instance.new("Frame")
+KillstreakHUDFrame.Name = "KillstreakHUDFrame"
+KillstreakHUDFrame.Size = UDim2.new(0, 140, 0, 45)
+KillstreakHUDFrame.Position = UDim2.new(0.5, -70, 0, 80)
+KillstreakHUDFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+KillstreakHUDFrame.BackgroundTransparency = 0.2
+KillstreakHUDFrame.Parent = ScreenGui
+Instance.new("UICorner", KillstreakHUDFrame).CornerRadius = UDim.new(0, 8)
+local KillstreakHUDStroke = Instance.new("UIStroke", KillstreakHUDFrame)
+KillstreakHUDStroke.Color = Color3.fromRGB(255, 50, 50)
+KillstreakHUDStroke.Thickness = 1.5
+
+MakeDraggable(KillstreakHUDFrame, nil, "KillstreakHUD")
+
+local KsTitleLabel = Instance.new("TextLabel", KillstreakHUDFrame)
+KsTitleLabel.Size = UDim2.new(1, 0, 0, 16)
+KsTitleLabel.Position = UDim2.new(0, 0, 0, 4)
+KsTitleLabel.BackgroundTransparency = 1
+KsTitleLabel.Text = "KILLSTREAK"
+KsTitleLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+KsTitleLabel.Font = Enum.Font.SourceSansBold
+KsTitleLabel.TextSize = 11
+
+local KsValueLabel = Instance.new("TextLabel", KillstreakHUDFrame)
+KsValueLabel.Size = UDim2.new(1, 0, 0, 22)
+KsValueLabel.Position = UDim2.new(0, 0, 0, 18)
+KsValueLabel.BackgroundTransparency = 1
+KsValueLabel.Text = "0"
+KsValueLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+KsValueLabel.Font = Enum.Font.SourceSansBold
+KsValueLabel.TextSize = 20
+
+-- SKILL COOLDOWN HUD (Q, R)
+local SkillHUDFrame = Instance.new("Frame")
+SkillHUDFrame.Name = "SkillHUDFrame"
+SkillHUDFrame.Size = UDim2.new(0, 115, 0, 50)
+SkillHUDFrame.Position = UDim2.new(0.5, -57, 1, -65)
+SkillHUDFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+SkillHUDFrame.BackgroundTransparency = 0.2
+SkillHUDFrame.ZIndex = 10
+SkillHUDFrame.Parent = ScreenGui
+Instance.new("UICorner", SkillHUDFrame).CornerRadius = UDim.new(0, 8)
+local SkillHUDStroke = Instance.new("UIStroke", SkillHUDFrame)
+SkillHUDStroke.Color = Color3.fromRGB(255, 150, 0)
+SkillHUDStroke.Thickness = 1.5
+
+MakeDraggable(SkillHUDFrame, nil, "SkillHUD")
+
+local skillSlots = {}
+local keysList = {"Q", "R"}
+for i, keyName in ipairs(keysList) do
+    local slot = Instance.new("TextButton", SkillHUDFrame)
+    slot.Size = UDim2.new(0, 45, 0, 40)
+    slot.Position = UDim2.new(0, 8 + (i - 1) * 54, 0, 5)
+    slot.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    slot.Text = ""
+    slot.ZIndex = 11
+    Instance.new("UICorner", slot).CornerRadius = UDim.new(0, 6)
+    
+    local slotStroke = Instance.new("UIStroke", slot)
+    slotStroke.Color = Color3.fromRGB(100, 100, 100)
+    slotStroke.Thickness = 1
+    
+    local keyText = Instance.new("TextLabel", slot)
+    keyText.Size = UDim2.new(1, 0, 0, 14)
+    keyText.Position = UDim2.new(0, 0, 0, 2)
+    keyText.BackgroundTransparency = 1
+    keyText.Text = keyName
+    keyText.TextColor3 = Color3.fromRGB(255, 150, 0)
+    keyText.Font = Enum.Font.SourceSansBold
+    keyText.TextSize = 12
+    keyText.ZIndex = 12
+    
+    local statusText = Instance.new("TextLabel", slot)
+    statusText.Size = UDim2.new(1, 0, 1, -14)
+    statusText.Position = UDim2.new(0, 0, 0, 14)
+    statusText.BackgroundTransparency = 1
+    statusText.Text = "READY"
+    statusText.TextColor3 = Color3.fromRGB(50, 255, 50)
+    statusText.Font = Enum.Font.SourceSansBold
+    statusText.TextSize = 9
+    statusText.TextScaled = true
+    statusText.ZIndex = 12
+    
+    skillSlots[keyName] = {Frame = slot, Status = statusText, CooldownEnd = 0}
+
+    table.insert(connections, slot.MouseButton1Click:Connect(function()
+        local cdDuration = (keyName == "Q" and 4.0) or (keyName == "R" and 8.0) or 3.5
+        if tick() >= skillSlots[keyName].CooldownEnd then
+            skillSlots[keyName].CooldownEnd = tick() + cdDuration
+        end
+    end))
+end
+
+-- MUSIC PLAYER HUD
+local MusicHUDFrame = Instance.new("Frame")
+MusicHUDFrame.Size = UDim2.new(0, 260, 0, 130)
+MusicHUDFrame.Position = UDim2.new(0, 10, 1, -145)
+MusicHUDFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MusicHUDFrame.BackgroundTransparency = 0.2
+MusicHUDFrame.Parent = ScreenGui
+Instance.new("UICorner", MusicHUDFrame).CornerRadius = UDim.new(0, 8)
+local MusicHUDStroke = Instance.new("UIStroke", MusicHUDFrame)
+MusicHUDStroke.Color = Color3.fromRGB(29, 185, 84)
+MusicHUDStroke.Thickness = 1.5
+
+MakeDraggable(MusicHUDFrame, nil, "MusicHUD")
+
+local MusicTitle = Instance.new("TextLabel", MusicHUDFrame)
+MusicTitle.Size = UDim2.new(1, -20, 0, 18)
+MusicTitle.Position = UDim2.new(0, 10, 0, 5)
+MusicTitle.BackgroundTransparency = 1
+MusicTitle.Text = "🎵 Музика: Не грає"
+MusicTitle.TextColor3 = Color3.new(1,1,1)
+MusicTitle.Font = Enum.Font.GothamBold
+MusicTitle.TextSize = 12
+MusicTitle.TextXAlignment = Enum.TextXAlignment.Left
+MusicTitle.TextTruncate = Enum.TextTruncate.AtEnd
+
+local ProgressBarBG = Instance.new("Frame", MusicHUDFrame)
+ProgressBarBG.Size = UDim2.new(1, -20, 0, 5)
+ProgressBarBG.Position = UDim2.new(0, 10, 0, 26)
+ProgressBarBG.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+ProgressBarBG.BorderSizePixel = 0
+Instance.new("UICorner", ProgressBarBG).CornerRadius = UDim.new(1, 0)
+
+local ProgressBarFill = Instance.new("Frame", ProgressBarBG)
+ProgressBarFill.Size = UDim2.new(0, 0, 1, 0)
+ProgressBarFill.BackgroundColor3 = Color3.fromRGB(29, 185, 84)
+ProgressBarFill.BorderSizePixel = 0
+Instance.new("UICorner", ProgressBarFill).CornerRadius = UDim.new(1, 0)
+
+local TimeLabel = Instance.new("TextLabel", MusicHUDFrame)
+TimeLabel.Size = UDim2.new(1, -20, 0, 12)
+TimeLabel.Position = UDim2.new(0, 10, 0, 33)
+TimeLabel.BackgroundTransparency = 1
+TimeLabel.Text = "00:00 / 00:00"
+TimeLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+TimeLabel.TextSize = 10
+TimeLabel.Font = Enum.Font.Gotham
+TimeLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+local StatusLabel = Instance.new("TextLabel", MusicHUDFrame)
+StatusLabel.Size = UDim2.new(1, -20, 0, 14)
+StatusLabel.Position = UDim2.new(0, 10, 0, 48)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Статус: Вимкнено"
+StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+StatusLabel.TextSize = 10
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+local PrevMusicBtn = Instance.new("TextButton", MusicHUDFrame)
+PrevMusicBtn.Size = UDim2.new(0, 70, 0, 24)
+PrevMusicBtn.Position = UDim2.new(0, 10, 0, 66)
+PrevMusicBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+PrevMusicBtn.Text = "⏮ Назад"
+PrevMusicBtn.TextColor3 = Color3.new(1,1,1)
+PrevMusicBtn.Font = Enum.Font.GothamBold
+PrevMusicBtn.TextSize = 10
+Instance.new("UICorner", PrevMusicBtn).CornerRadius = UDim.new(0, 5)
+
+local PlayMusicBtn = Instance.new("TextButton", MusicHUDFrame)
+PlayMusicBtn.Size = UDim2.new(0, 90, 0, 24)
+PlayMusicBtn.Position = UDim2.new(0, 85, 0, 66)
+PlayMusicBtn.BackgroundColor3 = Color3.fromRGB(29, 185, 84)
+PlayMusicBtn.Text = "⏯ Старт/Пауза"
+PlayMusicBtn.TextColor3 = Color3.new(1,1,1)
+PlayMusicBtn.Font = Enum.Font.GothamBold
+PlayMusicBtn.TextSize = 10
+Instance.new("UICorner", PlayMusicBtn).CornerRadius = UDim.new(0, 5)
+
+local NextMusicBtn = Instance.new("TextButton", MusicHUDFrame)
+NextMusicBtn.Size = UDim2.new(0, 70, 0, 24)
+NextMusicBtn.Position = UDim2.new(0, 180, 0, 66)
+NextMusicBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+NextMusicBtn.Text = "⏭ Вперед"
+NextMusicBtn.TextColor3 = Color3.new(1,1,1)
+NextMusicBtn.Font = Enum.Font.GothamBold
+NextMusicBtn.TextSize = 10
+Instance.new("UICorner", NextMusicBtn).CornerRadius = UDim.new(0, 5)
+
+local LoopBtn = Instance.new("TextButton", MusicHUDFrame)
+LoopBtn.Size = UDim2.new(0, 80, 0, 24)
+LoopBtn.Position = UDim2.new(0, 10, 0, 96)
+LoopBtn.BackgroundColor3 = isLooped and Color3.fromRGB(29, 185, 84) or Color3.fromRGB(50, 50, 50)
+LoopBtn.Text = isLooped and "🔁 Повтор: ТАК" or "🔁 Повтор: НІ"
+LoopBtn.TextColor3 = Color3.new(1,1,1)
+LoopBtn.Font = Enum.Font.GothamBold
+LoopBtn.TextSize = 9
+Instance.new("UICorner", LoopBtn).CornerRadius = UDim.new(0, 5)
+
+local VolDownBtn = Instance.new("TextButton", MusicHUDFrame)
+VolDownBtn.Size = UDim2.new(0, 24, 0, 24)
+VolDownBtn.Position = UDim2.new(0, 95, 0, 96)
+VolDownBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+VolDownBtn.Text = "🔉"
+VolDownBtn.TextColor3 = Color3.new(1,1,1)
+VolDownBtn.Font = Enum.Font.GothamBold
+VolDownBtn.TextSize = 10
+Instance.new("UICorner", VolDownBtn).CornerRadius = UDim.new(0, 5)
+
+local VolLabel = Instance.new("TextLabel", MusicHUDFrame)
+VolLabel.Size = UDim2.new(0, 35, 0, 24)
+VolLabel.Position = UDim2.new(0, 120, 0, 96)
+VolLabel.BackgroundTransparency = 1
+VolLabel.Text = math.floor(currentVolume * 100) .. "%"
+VolLabel.TextColor3 = Color3.new(1,1,1)
+VolLabel.Font = Enum.Font.GothamBold
+VolLabel.TextSize = 10
+
+local VolUpBtn = Instance.new("TextButton", MusicHUDFrame)
+VolUpBtn.Size = UDim2.new(0, 24, 0, 24)
+VolUpBtn.Position = UDim2.new(0, 156, 0, 96)
+VolUpBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+VolUpBtn.Text = "🔊"
+VolUpBtn.TextColor3 = Color3.new(1,1,1)
+VolUpBtn.Font = Enum.Font.GothamBold
+VolUpBtn.TextSize = 10
+Instance.new("UICorner", VolUpBtn).CornerRadius = UDim.new(0, 5)
+
+local MenuToggleBtn = Instance.new("TextButton", MusicHUDFrame)
+MenuToggleBtn.Size = UDim2.new(0, 65, 0, 24)
+MenuToggleBtn.Position = UDim2.new(0, 185, 0, 96)
+MenuToggleBtn.BackgroundColor3 = Color3.fromRGB(29, 185, 84)
+MenuToggleBtn.Text = "🎵 Меню"
+MenuToggleBtn.TextColor3 = Color3.new(1,1,1)
+MenuToggleBtn.Font = Enum.Font.GothamBold
+MenuToggleBtn.TextSize = 10
+Instance.new("UICorner", MenuToggleBtn).CornerRadius = UDim.new(0, 5)
+
+-- MUSIC WINDOW
+local MusicWindow = Instance.new("Frame", ScreenGui)
+MusicWindow.Size = UDim2.new(0, 300, 0, 320)
+MusicWindow.Position = UDim2.new(0.5, -150, 0.5, -160)
+MusicWindow.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+MusicWindow.Visible = false
+MusicWindow.ZIndex = 50
+Instance.new("UICorner", MusicWindow).CornerRadius = UDim.new(0, 12)
+local WinStroke = Instance.new("UIStroke", MusicWindow)
+WinStroke.Color = Color3.fromRGB(29, 185, 84)
+WinStroke.Thickness = 2
+
+MakeDraggable(MusicWindow, nil, "MusicWindow")
+
+local WinTitle = Instance.new("TextLabel", MusicWindow)
+WinTitle.Size = UDim2.new(1, -50, 0, 35)
+WinTitle.Position = UDim2.new(0, 15, 0, 0)
+WinTitle.BackgroundTransparency = 1
+WinTitle.Text = "Список треків"
+WinTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+WinTitle.TextSize = 14
+WinTitle.Font = Enum.Font.GothamBold
+WinTitle.TextXAlignment = Enum.TextXAlignment.Left
+WinTitle.ZIndex = 51
+
+local CloseWinBtn = Instance.new("TextButton", MusicWindow)
+CloseWinBtn.Size = UDim2.new(0, 24, 0, 24)
+CloseWinBtn.Position = UDim2.new(1, -32, 0, 8)
+CloseWinBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+CloseWinBtn.Text = "X"
+CloseWinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseWinBtn.Font = Enum.Font.GothamBold
+CloseWinBtn.TextSize = 11
+CloseWinBtn.ZIndex = 51
+Instance.new("UICorner", CloseWinBtn).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, CloseWinBtn.MouseButton1Click:Connect(function() MusicWindow.Visible = false end))
+
+local ScrollingList = Instance.new("ScrollingFrame", MusicWindow)
+ScrollingList.Size = UDim2.new(1, -20, 1, -50)
+ScrollingList.Position = UDim2.new(0, 10, 0, 42)
+ScrollingList.BackgroundTransparency = 1
+ScrollingList.BorderSizePixel = 0
+ScrollingList.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollingList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ScrollingList.ScrollBarThickness = 5
+ScrollingList.ZIndex = 51
+
+local UIListLayout = Instance.new("UIListLayout", ScrollingList)
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 6)
+
+-- KILL SOUND WINDOW
+local KillSoundWindow = Instance.new("Frame", ScreenGui)
+KillSoundWindow.Size = UDim2.new(0, 310, 0, 320)
+KillSoundWindow.Position = UDim2.new(0.5, -155, 0.5, -160)
+KillSoundWindow.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+KillSoundWindow.Visible = false
+KillSoundWindow.ZIndex = 50
+Instance.new("UICorner", KillSoundWindow).CornerRadius = UDim.new(0, 12)
+local KSWinStroke = Instance.new("UIStroke", KillSoundWindow)
+KSWinStroke.Color = Color3.fromRGB(255, 100, 0)
+KSWinStroke.Thickness = 2
+
+MakeDraggable(KillSoundWindow, nil, "KillSoundWindow")
+
+local KSWinTitle = Instance.new("TextLabel", KillSoundWindow)
+KSWinTitle.Size = UDim2.new(1, -50, 0, 35)
+KSWinTitle.Position = UDim2.new(0, 15, 0, 0)
+KSWinTitle.BackgroundTransparency = 1
+KSWinTitle.Text = "🔔 Звуки Убивства (Kill Sound)"
+KSWinTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+KSWinTitle.TextSize = 13
+KSWinTitle.Font = Enum.Font.GothamBold
+KSWinTitle.TextXAlignment = Enum.TextXAlignment.Left
+KSWinTitle.ZIndex = 51
+
+local KSCloseWinBtn = Instance.new("TextButton", KillSoundWindow)
+KSCloseWinBtn.Size = UDim2.new(0, 24, 0, 24)
+KSCloseWinBtn.Position = UDim2.new(1, -32, 0, 8)
+KSCloseWinBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+KSCloseWinBtn.Text = "X"
+KSCloseWinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+KSCloseWinBtn.Font = Enum.Font.GothamBold
+KSCloseWinBtn.TextSize = 11
+KSCloseWinBtn.ZIndex = 51
+Instance.new("UICorner", KSCloseWinBtn).CornerRadius = UDim.new(0, 6)
+
+table.insert(connections, KSCloseWinBtn.MouseButton1Click:Connect(function() KillSoundWindow.Visible = false end))
+
+local KSScrollingList = Instance.new("ScrollingFrame", KillSoundWindow)
+KSScrollingList.Size = UDim2.new(1, -20, 1, -50)
+KSScrollingList.Position = UDim2.new(0, 10, 0, 42)
+KSScrollingList.BackgroundTransparency = 1
+KSScrollingList.BorderSizePixel = 0
+KSScrollingList.CanvasSize = UDim2.new(0, 0, 0, 0)
+KSScrollingList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+KSScrollingList.ScrollBarThickness = 5
+KSScrollingList.ZIndex = 51
+
+local KSUIListLayout = Instance.new("UIListLayout", KSScrollingList)
+KSUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+KSUIListLayout.Padding = UDim.new(0, 6)
+
+local function FormatTime(seconds)
+    seconds = math.max(0, math.floor(seconds or 0))
+    local mins = math.floor(seconds / 60)
+    local secs = seconds % 60
+    return string.format("%02d:%02d", mins, secs)
+end
+
+local function UpdateMusicHUD()
+    if currentPlayingIndex > 0 and musicList[currentPlayingIndex] then
+        MusicTitle.Text = "🎵 " .. musicList[currentPlayingIndex].name
+        StatusLabel.Text = backgroundSound.IsPlaying and "Статус: Грає" or "Статус: Пауза"
+        StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    else
+        MusicTitle.Text = "🎵 Музика: Не грає"
+        StatusLabel.Text = "Статус: Вимкнено"
+        StatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end
+end
+
+local function PlayMusic(index, forceChange)
+    if musicList[index] then
+        if currentPlayingIndex == index and not forceChange then
+            if backgroundSound.IsPlaying then
+                backgroundSound:Pause()
+            else
+                backgroundSound:Resume()
+            end
+        else
+            currentPlayingIndex = index
+            backgroundSound:Stop()
+            backgroundSound.SoundId = musicList[index].id
+            backgroundSound:Play()
+        end
+        SaveConfig()
+        UpdateMusicHUD()
+    end
+end
+
+local function RefreshMusicUI()
+    for _, child in pairs(ScrollingList:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    for i, track in ipairs(musicList) do
+        local itemFrame = Instance.new("Frame")
+        itemFrame.Size = UDim2.new(1, -10, 0, 38)
+        itemFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        itemFrame.ZIndex = 52
+        itemFrame.Parent = ScrollingList
+        Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 6)
+
+        local playBtn = Instance.new("TextButton", itemFrame)
+        playBtn.Size = UDim2.new(1, -75, 1, 0)
+        playBtn.BackgroundTransparency = 1
+        playBtn.Text = "  " .. track.name
+        playBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        playBtn.Font = Enum.Font.GothamMedium
+        playBtn.TextSize = 12
+        playBtn.TextXAlignment = Enum.TextXAlignment.Left
+        playBtn.Position = UDim2.new(0, 5, 0, 0)
+        playBtn.ZIndex = 53
+        playBtn.TextTruncate = Enum.TextTruncate.AtEnd
+
+        playBtn.MouseButton1Click:Connect(function()
+            PlayMusic(i, false)
+        end)
+
+        local deleteBtn = Instance.new("TextButton", itemFrame)
+        deleteBtn.Size = UDim2.new(0, 60, 0, 24)
+        deleteBtn.Position = UDim2.new(1, -65, 0.5, -12)
+        deleteBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        deleteBtn.Text = "Видалити"
+        deleteBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        deleteBtn.Font = Enum.Font.GothamBold
+        deleteBtn.TextSize = 10
+        deleteBtn.ZIndex = 53
+        Instance.new("UICorner", deleteBtn).CornerRadius = UDim.new(0, 4)
+
+        deleteBtn.MouseButton1Click:Connect(function()
+            local deletedName = track.name
+            if currentPlayingIndex == i then
+                backgroundSound:Stop()
+                currentPlayingIndex = 0
+            elseif currentPlayingIndex > i then
+                currentPlayingIndex = currentPlayingIndex - 1
+            end
+            table.remove(musicList, i)
+            SaveConfig()
+            RefreshMusicUI()
+            UpdateMusicHUD()
+            StatusLabel.Text = "🗑 Видалено: " .. deletedName
+            StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        end)
+    end
+end
+
+local function RefreshKillSoundUI()
+    for _, child in pairs(KSScrollingList:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    for i, item in ipairs(killSoundList) do
+        local itemFrame = Instance.new("Frame")
+        itemFrame.Size = UDim2.new(1, -10, 0, 42)
+        itemFrame.BackgroundColor3 = (currentKillSoundIndex == i) and Color3.fromRGB(80, 50, 10) or Color3.fromRGB(45, 45, 45)
+        itemFrame.ZIndex = 52
+        itemFrame.Parent = KSScrollingList
+        Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 6)
+
+        local selectBtn = Instance.new("TextButton", itemFrame)
+        selectBtn.Size = UDim2.new(1, -115, 1, 0)
+        selectBtn.BackgroundTransparency = 1
+        selectBtn.Text = (currentKillSoundIndex == i and " ✓ " or "  ") .. item.name
+        selectBtn.TextColor3 = (currentKillSoundIndex == i) and Color3.fromRGB(255, 180, 50) or Color3.fromRGB(255, 255, 255)
+        selectBtn.Font = Enum.Font.GothamBold
+        selectBtn.TextSize = 12
+        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
+        selectBtn.Position = UDim2.new(0, 5, 0, 0)
+        selectBtn.ZIndex = 53
+        selectBtn.TextTruncate = Enum.TextTruncate.AtEnd
+
+        selectBtn.MouseButton1Click:Connect(function()
+            currentKillSoundIndex = i
+            SaveConfig()
+            RefreshKillSoundUI()
+        end)
+
+        local testBtn = Instance.new("TextButton", itemFrame)
+        testBtn.Size = UDim2.new(0, 45, 0, 24)
+        testBtn.Position = UDim2.new(1, -110, 0.5, -12)
+        testBtn.BackgroundColor3 = Color3.fromRGB(255, 140, 0)
+        testBtn.Text = "🔊 Тест"
+        testBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        testBtn.Font = Enum.Font.GothamBold
+        testBtn.TextSize = 9
+        testBtn.ZIndex = 53
+        Instance.new("UICorner", testBtn).CornerRadius = UDim.new(0, 4)
+
+        testBtn.MouseButton1Click:Connect(function()
+            PlayKillSound(i, true)
+        end)
+
+        local deleteBtn = Instance.new("TextButton", itemFrame)
+        deleteBtn.Size = UDim2.new(0, 58, 0, 24)
+        deleteBtn.Position = UDim2.new(1, -62, 0.5, -12)
+        deleteBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        deleteBtn.Text = "Видалити"
+        deleteBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        deleteBtn.Font = Enum.Font.GothamBold
+        deleteBtn.TextSize = 9
+        deleteBtn.ZIndex = 53
+        Instance.new("UICorner", deleteBtn).CornerRadius = UDim.new(0, 4)
+
+        deleteBtn.MouseButton1Click:Connect(function()
+            if currentKillSoundIndex == i then
+                currentKillSoundIndex = 1
+            elseif currentKillSoundIndex > i then
+                currentKillSoundIndex = currentKillSoundIndex - 1
+            end
+            table.remove(killSoundList, i)
+            SaveConfig()
+            RefreshKillSoundUI()
+        end)
+    end
+end
+
+UpdateMusicHUD()
+
+table.insert(connections, PlayMusicBtn.MouseButton1Click:Connect(function()
+    if currentPlayingIndex == 0 then
+        if #musicList > 0 then PlayMusic(1, true) end
+    else
+        PlayMusic(currentPlayingIndex, false)
+    end
+end))
+
+table.insert(connections, PrevMusicBtn.MouseButton1Click:Connect(function()
+    if #musicList == 0 then return end
+    local prevIndex = currentPlayingIndex - 1
+    if prevIndex < 1 then prevIndex = #musicList end
+    PlayMusic(prevIndex, true)
+end))
+
+table.insert(connections, NextMusicBtn.MouseButton1Click:Connect(function()
+    if #musicList == 0 then return end
+    local nextIndex = currentPlayingIndex + 1
+    if nextIndex > #musicList then nextIndex = 1 end
+    PlayMusic(nextIndex, true)
+end))
+
+table.insert(connections, LoopBtn.MouseButton1Click:Connect(function()
+    isLooped = not isLooped
+    backgroundSound.Looped = isLooped
+    LoopBtn.Text = isLooped and "🔁 Повтор: ТАК" or "🔁 Повтор: НІ"
+    LoopBtn.BackgroundColor3 = isLooped and Color3.fromRGB(29, 185, 84) or Color3.fromRGB(50, 50, 50)
+    SaveConfig()
+end))
+
+local function ChangeVolume(delta)
+    currentVolume = math.clamp(currentVolume + delta, 0, 1)
+    backgroundSound.Volume = currentVolume
+    VolLabel.Text = math.floor(currentVolume * 100) .. "%"
+    SaveConfig()
+end
+
+table.insert(connections, VolDownBtn.MouseButton1Click:Connect(function() ChangeVolume(-0.1) end))
+table.insert(connections, VolUpBtn.MouseButton1Click:Connect(function() ChangeVolume(0.1) end))
+
+table.insert(connections, MenuToggleBtn.MouseButton1Click:Connect(function()
+    MusicWindow.Visible = not MusicWindow.Visible
+    if MusicWindow.Visible then RefreshMusicUI() end
+end))
+
+table.insert(connections, OpenMusicMenuBtn.MouseButton1Click:Connect(function()
+    MusicWindow.Visible = not MusicWindow.Visible
+    if MusicWindow.Visible then RefreshMusicUI() end
+end))
+
+table.insert(connections, OpenKillSoundMenuBtn.MouseButton1Click:Connect(function()
+    KillSoundWindow.Visible = not KillSoundWindow.Visible
+    if KillSoundWindow.Visible then RefreshKillSoundUI() end
+end))
+
+table.insert(connections, AddTrackBtn.MouseButton1Click:Connect(function()
+    local name = TrackNameBox.Text
+    local id = TrackIDBox.Text
+    if name ~= "" and id ~= "" then
+        if not string.find(id, "rbxassetid://") then
+            id = "rbxassetid://" .. id
+        end
+        table.insert(musicList, {name = name, id = id})
+        TrackNameBox.Text = ""
+        TrackIDBox.Text = ""
+        SaveConfig()
+        RefreshMusicUI()
+    end
+end))
+
+table.insert(connections, AddKSBtn.MouseButton1Click:Connect(function()
+    local name = KSNameBox.Text
+    local id = KSIDBox.Text
+    if name ~= "" and id ~= "" then
+        if not string.find(id, "rbxassetid://") then
+            id = "rbxassetid://" .. id
+        end
+        table.insert(killSoundList, {name = name, id = id})
+        KSNameBox.Text = ""
+        KSIDBox.Text = ""
+        SaveConfig()
+        RefreshKillSoundUI()
+    end
+end))
+
+table.insert(connections, backgroundSound.Ended:Connect(function()
+    if not isLooped and #musicList > 0 then
+        local nextIndex = currentPlayingIndex + 1
+        if nextIndex > #musicList then nextIndex = 1 end
+        PlayMusic(nextIndex, true)
+    else
+        UpdateMusicHUD()
+    end
+end))
+
+table.insert(connections, backgroundSound.Played:Connect(UpdateMusicHUD))
+table.insert(connections, backgroundSound.Paused:Connect(UpdateMusicHUD))
+
+-- WATERMARK
+local Watermark = Instance.new("Frame", ScreenGui)
+Watermark.Size = UDim2.new(0, 260, 0, 28)
+Watermark.Position = UDim2.new(0, 10, 0, 10)
+Watermark.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+Instance.new("UICorner", Watermark).CornerRadius = UDim.new(0, 6)
+local WatermarkStroke = Instance.new("UIStroke", Watermark)
+WatermarkStroke.Color = Color3.fromRGB(255, 150, 0)
+WatermarkStroke.Thickness = 1.2
+
+MakeDraggable(Watermark, nil, "Watermark")
+
+local WatermarkText = Instance.new("TextLabel", Watermark)
+WatermarkText.Size = UDim2.new(1, 0, 1, 0)
+WatermarkText.BackgroundTransparency = 1
+WatermarkText.TextColor3 = Color3.new(1, 1, 1)
+WatermarkText.Font = Enum.Font.SourceSansBold
+WatermarkText.TextSize = 11
+WatermarkText.TextXAlignment = Enum.TextXAlignment.Center
+
+local gameName = "Roblox Game"
+pcall(function()
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+    if info and info.Name then gameName = info.Name end
+end)
+
+local function SetupLocalChar(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if hum then
+        table.insert(connections, hum.Died:Connect(function()
+            Settings.Killstreak = 0
+        end))
+    end
+    task.wait(1)
+    UpdateVisuals(char)
+end
+
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(SetupLocalChar))
+if LocalPlayer.Character then SetupLocalChar(LocalPlayer.Character) end
+
+local function Uninject()
+    for _, conn in ipairs(connections) do
+        if conn and conn.Connected then conn:Disconnect() end
+    end
+    
+    if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end
+    if RangePart and RangePart.Parent then RangePart:Destroy() end
+    if ESPFolder and ESPFolder.Parent then ESPFolder:Destroy() end
+    if backgroundSound and backgroundSound.Parent then backgroundSound:Destroy() end
+    if killSoundObject and killSoundObject.Parent then killSoundObject:Destroy() end
+    
+    if LocalPlayer.Character then
+        local char = LocalPlayer.Character
+        if char:FindFirstChild("CustomWings") then char.CustomWings:Destroy() end
+        if char:FindFirstChild("CustomHalo") then char.CustomHalo:Destroy() end
+        if char:FindFirstChild("CustomTrail") then char.CustomTrail:Destroy() end
+    end
+    
+    Lighting.Brightness = OriginalLighting.Brightness
+    Lighting.ClockTime = OriginalLighting.ClockTime
+    Lighting.GlobalShadows = OriginalLighting.GlobalShadows
+    
+    if isBlocking then
+        pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game) end)
+    end
+end
+
+table.insert(connections, UninjectBtn.MouseButton1Click:Connect(Uninject))
+
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        Settings.GUI_Open = not Settings.GUI_Open
+        Main.Visible = Settings.GUI_Open
+        SaveConfig()
+    end
+end))
+
+local function FaceTarget(targetRoot)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local currentPos = root.Position
+    local targetPos = targetRoot.Position
+    local lookDirection = Vector3.new(targetPos.X, currentPos.Y, targetPos.Z)
+    root.CFrame = CFrame.lookAt(currentPos, lookDirection)
+end
+
+local function IsValidAnimation(track)
+    if not track then return false end
+    local priority = track.Priority
+    if priority == Enum.AnimationPriority.Core or
+       priority == Enum.AnimationPriority.Idle or
+       priority == Enum.AnimationPriority.Movement then
+        return false
+    end
+
+    local name = string.lower(tostring(track.Name))
+    local animObj = track.Animation
+    local animName = animObj and string.lower(tostring(animObj.Name)) or ""
+
+    local blockedKeywords = {
+        "walk", "run", "sprint", "jog", "move", "moving", "dash", "dodge", "step", "roll",
+        "slide", "evade", "flashstep", "backstep", "sidestep", "teleport", "vanish", "leap",
+        "rush", "frontdash", "backdash", "leftdash", "rightdash", "airdash", "side", "shift",
+        "qdash", "edash", "fdash", "fasttravel", "blink",
+        "guard", "block", "parry", "defend", "shield", "deflect", "posture", "hold",
+        "holding", "pblock", "counter", "absorb", "reflect", "armor", "invincible",
+        "blockbreak", "guardbreak", "perfectblock", "parrying", "stasis",
+        "idle", "sit", "climb", "swim", "fall", "jump", "freefall", "land", "bounce",
+        "equip", "unequip", "pull", "holster", "stow", "style", "mode", "transform",
+        "spirit", "breathe", "camera", "emote", "dance", "stun", "hit", "damage", "gethit"
+    }
+
+    for _, keyword in ipairs(blockedKeywords) do
+        if name:find(keyword) or animName:find(keyword) then
+            return false
+        end
+    end
+    return true
+end
+
+local function MonitorPlayer(player)
+    if player == LocalPlayer then return end
+    local function setup(char)
+        local hum = char:WaitForChild("Humanoid", 5)
+        local animator = hum and hum:WaitForChild("Animator", 5)
+        if not animator then return end
+        
+        table.insert(connections, animator.AnimationPlayed:Connect(function(track)
+            if Settings.IgnoreFriends and IsFriend(player) then return end
+            if not Settings.AutoF or currentTarget ~= char then return end
+
+            if IsValidAnimation(track) then
+                task.spawn(function()
+                    if Settings.ReactionDelay > 0 then task.wait(Settings.ReactionDelay) end
+                    if not Settings.AutoF or currentTarget ~= char then return end
+
+                    if not isBlocking then
+                        isBlocking = true
+                        currentBlockTrack = track
+                        pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game) end)
+                        
+                        task.delay(Settings.BlockDuration, function()
+                            if isBlocking and currentBlockTrack == track then
+                                isBlocking = false
+                                currentBlockTrack = nil
+                                pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game) end)
+                            end
+                        end)
+                    end
+                end)
+            end
+        end))
+    end
+    table.insert(connections, player.CharacterAdded:Connect(setup))
+    if player.Character then setup(player.Character) end
+end
+
+for _, p in pairs(Players:GetPlayers()) do MonitorPlayer(p) end
+table.insert(connections, Players.PlayerAdded:Connect(MonitorPlayer))
+
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    local keyCode = input.KeyCode
+    local keyString = nil
+    local cdDuration = 3.5
+    
+    if keyCode == Enum.KeyCode.Q then keyString = "Q"; cdDuration = 4.0
+    elseif keyCode == Enum.KeyCode.R then keyString = "R"; cdDuration = 8.0
+    end
+    
+    if keyString and skillSlots[keyString] then
+        local slotData = skillSlots[keyString]
+        if tick() >= slotData.CooldownEnd then
+            slotData.CooldownEnd = tick() + cdDuration
+        end
+    end
+end))
+
+local fpsCounter = 0
+local lastFpsUpdate = tick()
+local currentFps = 60
+
+local lastTargetHum = nil
+local targetDiedConn = nil
+
+table.insert(connections, RunService.RenderStepped:Connect(function()
+    fpsCounter = fpsCounter + 1
+    if tick() - lastFpsUpdate >= 1 then
+        currentFps = fpsCounter
+        fpsCounter = 0
+        lastFpsUpdate = tick()
+    end
+
+    -- Обновление Skill HUD
+    for key, data in pairs(skillSlots) do
+        local timeLeft = data.CooldownEnd - tick()
+        if timeLeft > 0 then
+            data.Status.Text = string.format("%.1fs", timeLeft)
+            data.Status.TextColor3 = Color3.fromRGB(255, 80, 80)
+        else
+            data.Status.Text = "READY"
+            data.Status.TextColor3 = Color3.fromRGB(50, 255, 50)
+        end
+    end
+
+    Watermark.Visible = Settings.Watermark
+    if Settings.Watermark then
+        local realTime = os.date("%H:%M:%S")
+        local sessionDuration = math.floor(tick() - sessionStartTime)
+        local hours = math.floor(sessionDuration / 3600)
+        local minutes = math.floor((sessionDuration % 3600) / 60)
+        local seconds = sessionDuration % 60
+        WatermarkText.Text = string.format("Pixels | %s | FPS: %d | Time: %s | Play: %02d:%02d:%02d", gameName, currentFps, realTime, hours, minutes, seconds)
+        Watermark.Size = UDim2.new(0, WatermarkText.TextBounds.X + 20, 0, 28)
+    end
+
+    SkillHUDFrame.Visible = Settings.SkillHUD
+    KillstreakHUDFrame.Visible = Settings.KillstreakHUD
+    KsValueLabel.Text = tostring(Settings.Killstreak)
+    MusicHUDFrame.Visible = Settings.MusicHUD
+
+    if backgroundSound.IsPlaying or backgroundSound.TimePosition > 0 then
+        local pos = backgroundSound.TimePosition
+        local len = backgroundSound.TimeLength
+        if len > 0 then
+            ProgressBarFill.Size = UDim2.new(math.clamp(pos / len, 0, 1), 0, 1, 0)
+            TimeLabel.Text = FormatTime(pos) .. " / " .. FormatTime(len)
+        else
+            ProgressBarFill.Size = UDim2.new(0, 0, 1, 0)
+            TimeLabel.Text = "00:00 / 00:00"
+        end
+    else
+        ProgressBarFill.Size = UDim2.new(0, 0, 1, 0)
+        TimeLabel.Text = "00:00 / 00:00"
+    end
+
+    local localChar = LocalPlayer.Character
+    if not localChar then return end
+    local rootLocal = localChar:FindFirstChild("HumanoidRootPart")
+    if not rootLocal then return end
+
+    RangePart.Size = Vector3.new(0.2, Settings.Range * 2, Settings.Range * 2)
+    RangePart.Position = rootLocal.Position - Vector3.new(0, 2.8, 0)
+    RangePart.Transparency = Settings.AutoF and 0.6 or 1
+
+    if Settings.Fullbright then
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 12
+        Lighting.GlobalShadows = false
+    end
+
+    local closestTarget = nil
+    local shortestDist = Settings.Range
+
+    if Settings.AutoF or Settings.TargetESP then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                local isFriend = false
+                if Settings.IgnoreFriends then
+                    isFriend = IsFriend(player)
+                end
+
+                if not isFriend then
+                    local tRoot = player.Character:FindFirstChild("HumanoidRootPart")
+                    local tHum = player.Character:FindFirstChildOfClass("Humanoid")
+                    if tRoot and tHum and tHum.Health > 0 then
+                        local heightDiff = math.abs(rootLocal.Position.Y - tRoot.Position.Y)
+                        if heightDiff <= Settings.MaxHeightDiff then
+                            local dist = (Vector3.new(rootLocal.Position.X, 0, rootLocal.Position.Z) - Vector3.new(tRoot.Position.X, 0, tRoot.Position.Z)).Magnitude
+                            if dist <= shortestDist then
+                                shortestDist = dist
+                                closestTarget = player.Character
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    currentTarget = closestTarget
+
+    -- Отслеживание убийства цели (Killstreak + Kill Sound)
+    if currentTarget then
+        local targetHum = currentTarget:FindFirstChildOfClass("Humanoid")
+        if targetHum and targetHum ~= lastTargetHum then
+            if targetDiedConn then targetDiedConn:Disconnect() end
+            lastTargetHum = targetHum
+            targetDiedConn = targetHum.Died:Connect(function()
+                Settings.Killstreak = Settings.Killstreak + 1
+                if Settings.KillSoundEnabled then
+                    PlayKillSound(currentKillSoundIndex, false)
+                end
+            end)
+        end
+    else
+        if targetDiedConn then
+            targetDiedConn:Disconnect()
+            targetDiedConn = nil
+        end
+        lastTargetHum = nil
+    end
+
+    if currentTarget and Settings.AutoF then
+        local tRoot = currentTarget:FindFirstChild("HumanoidRootPart")
+        if tRoot then FaceTarget(tRoot) end
+    end
+
+    for _, orb in ipairs(Orbs) do orb.Transparency = 1 end
+    ESPRing.Transparency = 1
+    ESPHighlight.Enabled = false
+    ESPArrow.Transparency = 1
+
+    if Settings.TargetESP and currentTarget then
+        local tRoot = currentTarget:FindFirstChild("HumanoidRootPart")
+        if tRoot then
+            if Settings.ESPStyle == "Orbs" then
+                local time = tick() * 3
+                local radius = 3
+                for i, orb in ipairs(Orbs) do
+                    orb.Transparency = 0.3
+                    local offset = (math.pi * 2 / #Orbs) * i
+                    orb.Position = tRoot.Position + Vector3.new(math.cos(time + offset) * radius, math.sin(time * 2 + offset) * 1.5, math.sin(time + offset) * radius)
+                end
+            elseif Settings.ESPStyle == "Ring" then
+                ESPRing.Transparency = 0.3
+                ESPRing.Position = tRoot.Position - Vector3.new(0, 2.7, 0)
+            elseif Settings.ESPStyle == "Box" then
+                ESPHighlight.Adornee = currentTarget
+                ESPHighlight.Enabled = true
+            elseif Settings.ESPStyle == "Arrows" then
+                ESPArrow.Transparency = 0.2
+                ESPArrow.Position = tRoot.Position + Vector3.new(0, 3.5, 0)
+                ESPArrow.CFrame = CFrame.new(ESPArrow.Position) * CFrame.Angles(0, tick() * 4, 0)
+            end
+        end
+    end
+
+    if Settings.TargetHUD and currentTarget then
+        HUDFrame.Visible = true
+        local targetHum = currentTarget:FindFirstChildOfClass("Humanoid")
+        local tPlayer = Players:GetPlayerFromCharacter(currentTarget)
+        
+        if tPlayer then
+            HUDName.Text = tPlayer.DisplayName .. " (@" .. tPlayer.Name .. ")"
+            AvatarImage.Image = GetAvatar(tPlayer.UserId)
+        end
+        
+        if targetHum then
+            local hpPercent = math.clamp(targetHum.Health / targetHum.MaxHealth, 0, 1)
+            HealthFill.Size = UDim2.new(hpPercent, 0, 1, 0)
+            HealthFill.BackgroundColor3 = Color3.fromRGB(255 - (hpPercent * 255), hpPercent * 255, 50)
+        end
+        
+        local dist = math.floor((rootLocal.Position - currentTarget.HumanoidRootPart.Position).Magnitude)
+        HUDDist.Text = "Distance: " .. dist .. " studs"
+        HUDStroke.Color = Color3.fromRGB(255, 50, 50)
+    else
+        HUDFrame.Visible = false
+    end
+
+    if isBlocking and not Settings.AutoF then
+        isBlocking = false
+        currentBlockTrack = nil
+        pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game) end)
+    end
+end))

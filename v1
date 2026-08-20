@@ -9,14 +9,18 @@ local SoundService = game:GetService("SoundService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
+local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
 local CONFIG_FILE = "PixelClientConfig.json"
+local PIXEL_CLIENT_TAG = "[⚡PixelClient⚡]"
 
 -- ========================================================
 -- 1. СИСТЕМА ВЫГРУЗКИ (UNINJECT SYSTEM)
 -- ========================================================
-local UnloadSystem = { Connections = {}, Instances = {} }
+local UnloadSystem = { Connections = {}, Instances = {}, Drawings = {} }
 
 function UnloadSystem:TrackConnection(conn)
     table.insert(self.Connections, conn)
@@ -28,8 +32,13 @@ function UnloadSystem:TrackInstance(inst)
     return inst
 end
 
+function UnloadSystem:TrackDrawing(obj)
+    table.insert(self.Drawings, obj)
+    return obj
+end
+
 -- ========================================================
--- 2. СТИЛИ И КОНСТАНТЫ PIXEL CLIENT
+-- 2. СТИЛИ И КОНСТАНТЫ MINECRAFT
 -- ========================================================
 local MC_FONT = Enum.Font.Arcade
 local COLOR_BG = Color3.fromRGB(198, 198, 198)
@@ -58,24 +67,46 @@ local OriginalLighting = {
 }
 
 local Settings = {
-    AutoF = false,
+    -- Combat
+    AutoBlock = false,
+    AutoAim = false,
+    AntiFling = true,
+    CheaterDetector = true,
     Range = 12,
     MaxHeightDiff = 6,
-    GUI_Open = true,
     ReactionDelay = 0.0,
     BlockDuration = 0.8,
+    
+    -- Movement
+    SpeedEnabled = false,
+    SpeedValue = 24,
+    SprintEnabled = false,
+    SprintSpeedValue = 35,
+    FlyEnabled = false,
+    FlySpeed = 50,
+
+    -- Visuals
     WingsEnabled = false,
     HaloEnabled = false,
     TrailEnabled = false,
     TargetESP = true,
-    ESPStyle = "Orbs",
     TargetHUD = true,
     SkillHUD = true,
     KillstreakHUD = true,
     MusicHUD = true,
+    KeybindHUD = true,
     Watermark = true,
     Fullbright = false,
+    ClientUsersESP = true,
+    ResolutionEnabled = false,
+    ResolutionValue = 0.5,
+    FOVEnabled = false,
+    FOVValue = 120,
+
+    -- Extra
     IgnoreFriends = true,
+
+    -- Audio / Misc
     MusicVolume = 0.5,
     MusicLooped = false,
     LastTrackIndex = 0,
@@ -84,14 +115,80 @@ local Settings = {
     KillSoundEnabled = true,
     KillSoundVolume = 0.8,
     LastKillSoundIndex = 1,
-    ClientUsersESP = true,
-    
-    -- Разрешение и FOV
-    ResolutionEnabled = false,
-    ResolutionValue = 0.5,
-    FOVEnabled = false,
-    FOVValue = 120
+    GUI_Open = true,
+
+    -- Keybinds
+    Binds = {
+        AutoBlock = Enum.KeyCode.G,
+        AutoAim = Enum.KeyCode.V,
+        SpeedEnabled = Enum.KeyCode.Z,
+        SprintEnabled = Enum.KeyCode.C,
+        FlyEnabled = Enum.KeyCode.X,
+        TargetESP = Enum.KeyCode.E,
+        Fullbright = Enum.KeyCode.B,
+        AntiFling = Enum.KeyCode.N,
+        CheaterDetector = Enum.KeyCode.M
+    }
 }
+
+local UI_Toggles = {}
+
+local function toggleSetting(key)
+    Settings[key] = not Settings[key]
+    if UI_Toggles[key] then
+        UI_Toggles[key]()
+    end
+end
+
+local Actions = {
+    AutoBlock = function() toggleSetting("AutoBlock") end,
+    AutoAim = function() toggleSetting("AutoAim") end,
+    AntiFling = function() toggleSetting("AntiFling") end,
+    CheaterDetector = function() toggleSetting("CheaterDetector") end,
+    SpeedEnabled = function() toggleSetting("SpeedEnabled") end,
+    SprintEnabled = function() toggleSetting("SprintEnabled") end,
+    FlyEnabled = function() toggleSetting("FlyEnabled") end,
+    TargetESP = function() toggleSetting("TargetESP") end,
+    Fullbright = function() toggleSetting("Fullbright") end,
+    WingsEnabled = function() toggleSetting("WingsEnabled") end,
+    HaloEnabled = function() toggleSetting("HaloEnabled") end,
+    TrailEnabled = function() toggleSetting("TrailEnabled") end
+}
+
+local isSprinting = false
+local pixelClientUsers = {}
+local flaggedCheaters = {}
+local currentlyBindingFeature = nil
+
+UnloadSystem:TrackConnection(UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe and UserInputService:GetFocusedTextBox() then return end
+
+    if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+        isSprinting = true
+    end
+
+    if currentlyBindingFeature then
+        if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
+            Settings.Binds[currentlyBindingFeature] = nil
+        elseif input.KeyCode ~= Enum.KeyCode.Unknown then
+            Settings.Binds[currentlyBindingFeature] = input.KeyCode
+        end
+        currentlyBindingFeature = nil
+        return
+    end
+
+    for feature, key in pairs(Settings.Binds) do
+        if key and input.KeyCode == key and Actions[feature] then
+            Actions[feature]()
+        end
+    end
+end))
+
+UnloadSystem:TrackConnection(UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+        isSprinting = false
+    end
+end))
 
 local avatarCache = {}
 local friendCache = {}
@@ -118,6 +215,45 @@ local function GetAvatar(userId)
     return ""
 end
 
+-- ========================================================
+-- 4. ЧАТ И ДЕТЕКТОР КЛИЕНТА
+-- ========================================================
+local function BroadcastPixelClient()
+    pcall(function()
+        if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+            local generalChannel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+            if generalChannel then
+                generalChannel:SendAsync(PIXEL_CLIENT_TAG)
+            end
+        else
+            local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+            if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
+                chatEvent.SayMessageRequest:FireServer(PIXEL_CLIENT_TAG, "All")
+            end
+        end
+    end)
+end
+
+local function RegisterChatListener(player)
+    if player == LocalPlayer then return end
+    UnloadSystem:TrackConnection(player.Chatted:Connect(function(msg)
+        if string.find(msg, PIXEL_CLIENT_TAG) or string.find(msg, "PixelClient") then
+            pixelClientUsers[player] = true
+        end
+    end))
+end
+
+for _, p in pairs(Players:GetPlayers()) do RegisterChatListener(p) end
+UnloadSystem:TrackConnection(Players.PlayerAdded:Connect(RegisterChatListener))
+
+task.spawn(function()
+    task.wait(2)
+    BroadcastPixelClient()
+end)
+
+-- ========================================================
+-- 5. МУЗЫКА И ЗВУКИ КИЛЛОВ
+-- ========================================================
 local musicList = {
     {name = "Default Chill", id = "rbxassetid://1848354536"},
     {name = "Epic Adventure", id = "rbxassetid://1843378603"}
@@ -137,14 +273,14 @@ local killSoundVolume = Settings.KillSoundVolume or 0.8
 local isLooped = Settings.MusicLooped
 
 local backgroundSound = Instance.new("Sound")
-backgroundSound.Name = "PixelBackgroundMusic"
+backgroundSound.Name = "PixelClientBackgroundMusic"
 backgroundSound.Volume = currentVolume
 backgroundSound.Looped = isLooped
 backgroundSound.Parent = SoundService
 UnloadSystem:TrackInstance(backgroundSound)
 
 local killSoundObject = Instance.new("Sound")
-killSoundObject.Name = "PixelKillSound"
+killSoundObject.Name = "PixelClientKillSound"
 killSoundObject.Volume = killSoundVolume
 killSoundObject.Looped = false
 killSoundObject.Parent = SoundService
@@ -170,8 +306,14 @@ local function SaveConfig()
         Settings.KillSoundVolume = killSoundVolume
         Settings.LastKillSoundIndex = currentKillSoundIndex
         
+        local rawBinds = {}
+        for k, v in pairs(Settings.Binds) do
+            rawBinds[k] = v and v.Name or "None"
+        end
+
         local data = {
             Settings = Settings,
+            Binds = rawBinds,
             CustomMusicList = musicList,
             CustomKillSoundList = killSoundList
         }
@@ -187,7 +329,16 @@ local function LoadConfig()
     if success and type(result) == "table" then
         if result.Settings then
             for k, v in pairs(result.Settings) do
-                if Settings[k] ~= nil and k ~= "Killstreak" then Settings[k] = v end
+                if Settings[k] ~= nil and k ~= "Killstreak" and k ~= "Binds" then Settings[k] = v end
+            end
+        end
+        if result.Binds then
+            for k, keyName in pairs(result.Binds) do
+                if keyName == "None" then
+                    Settings.Binds[k] = nil
+                elseif Enum.KeyCode[keyName] then
+                    Settings.Binds[k] = Enum.KeyCode[keyName]
+                end
             end
         end
         if result.CustomMusicList then musicList = result.CustomMusicList end
@@ -212,10 +363,111 @@ local currentTarget = nil
 local currentBlockTrack = nil
 
 -- ========================================================
--- 4. ИНТЕРФЕЙС PIXEL CLIENT (ОСНОВНОЕ ОКНО)
+-- 6. DRAWING ESP SYSTEM
+-- ========================================================
+local ESP_Cache = {}
+
+local function CreateDrawingESP(player)
+    if ESP_Cache[player] then return end
+
+    local boxOutline = Drawing.new("Square")
+    boxOutline.Visible = false
+    boxOutline.Color = Color3.fromRGB(0, 0, 0)
+    boxOutline.Thickness = 3
+    boxOutline.Filled = false
+    UnloadSystem:TrackDrawing(boxOutline)
+
+    local box = Drawing.new("Square")
+    box.Visible = false
+    box.Color = COLOR_TEXT_YELLOW
+    box.Thickness = 1
+    box.Filled = false
+    UnloadSystem:TrackDrawing(box)
+
+    local nameText = Drawing.new("Text")
+    nameText.Visible = false
+    nameText.Color = Color3.fromRGB(255, 255, 255)
+    nameText.Size = 14
+    nameText.Center = true
+    nameText.Outline = true
+    UnloadSystem:TrackDrawing(nameText)
+
+    local healthBg = Drawing.new("Square")
+    healthBg.Visible = false
+    healthBg.Color = Color3.fromRGB(0, 0, 0)
+    healthBg.Thickness = 1
+    healthBg.Filled = true
+    UnloadSystem:TrackDrawing(healthBg)
+
+    local healthBar = Drawing.new("Square")
+    healthBar.Visible = false
+    healthBar.Color = Color3.fromRGB(60, 180, 60)
+    healthBar.Thickness = 1
+    healthBar.Filled = true
+    UnloadSystem:TrackDrawing(healthBar)
+
+    ESP_Cache[player] = {
+        BoxOutline = boxOutline,
+        Box = box,
+        Name = nameText,
+        HealthBg = healthBg,
+        HealthBar = healthBar
+    }
+end
+
+local function RemoveDrawingESP(player)
+    if ESP_Cache[player] then
+        for _, obj in pairs(ESP_Cache[player]) do
+            pcall(function() obj:Remove() end)
+        end
+        ESP_Cache[player] = nil
+    end
+end
+
+local function Get2DBoundingBox(char, cam)
+    local cf, size = char:GetBoundingBox()
+    local half = size * 0.5
+    local corners = {
+        cf * Vector3.new(-half.X,  half.Y, -half.Z),
+        cf * Vector3.new( half.X,  half.Y, -half.Z),
+        cf * Vector3.new(-half.X, -half.Y, -half.Z),
+        cf * Vector3.new( half.X, -half.Y, -half.Z),
+        cf * Vector3.new(-half.X,  half.Y,  half.Z),
+        cf * Vector3.new( half.X,  half.Y,  half.Z),
+        cf * Vector3.new(-half.X, -half.Y,  half.Z),
+        cf * Vector3.new( half.X, -half.Y,  half.Z),
+    }
+
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyVisible = false
+
+    for i = 1, 8 do
+        local pos, onScreen = cam:WorldToViewportPoint(corners[i])
+        if onScreen then anyVisible = true end
+        if pos.X < minX then minX = pos.X end
+        if pos.Y < minY then minY = pos.Y end
+        if pos.X > maxX then maxX = pos.X end
+        if pos.Y > maxY then maxY = pos.Y end
+    end
+
+    if not anyVisible or minX == math.huge then return nil end
+    return Vector2.new(minX, minY), Vector2.new(maxX - minX, maxY - minY)
+end
+
+for _, p in pairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then CreateDrawingESP(p) end
+end
+UnloadSystem:TrackConnection(Players.PlayerAdded:Connect(function(p)
+    if p ~= LocalPlayer then CreateDrawingESP(p) end
+end))
+UnloadSystem:TrackConnection(Players.PlayerRemoving:Connect(RemoveDrawingESP))
+
+-- ========================================================
+-- 7. ИНТЕРФЕЙС МЕНЮ
 -- ========================================================
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "PixelClientHub"
+ScreenGui.Name = "PixelClientGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 999999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -280,10 +532,10 @@ ToggleBtn.Name = "MobileToggleBtn"
 ToggleBtn.Size = UDim2.new(0, 45, 0, 45)
 ToggleBtn.Position = UDim2.new(0, 10, 0.35, 0)
 ToggleBtn.BackgroundColor3 = COLOR_BG
-ToggleBtn.Text = "PIXEL"
+ToggleBtn.Text = "PX"
 ToggleBtn.TextColor3 = Color3.fromRGB(40, 40, 40)
 ToggleBtn.Font = MC_FONT
-ToggleBtn.TextSize = 14
+ToggleBtn.TextSize = 20
 ToggleBtn.Parent = ScreenGui
 applyPixelBorder(ToggleBtn, Color3.fromRGB(0, 0, 0), 2)
 MakeDraggable(ToggleBtn, nil, "ToggleBtn")
@@ -330,13 +582,13 @@ sidebar.Parent = mainFrame
 applyPixelBorder(sidebar, Color3.fromRGB(0, 0, 0), 2)
 
 local sidebarList = Instance.new("UIListLayout")
-sidebarList.Padding = UDim.new(0, 6)
+sidebarList.Padding = UDim.new(0, 4)
 sidebarList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 sidebarList.SortOrder = Enum.SortOrder.LayoutOrder
 sidebarList.Parent = sidebar
 
 local sidebarPadding = Instance.new("UIPadding")
-sidebarPadding.PaddingTop = UDim.new(0, 8)
+sidebarPadding.PaddingTop = UDim.new(0, 6)
 sidebarPadding.Parent = sidebar
 
 local contentArea = Instance.new("Frame")
@@ -394,14 +646,14 @@ UnloadSystem:TrackConnection(closeBtn.MouseButton1Click:Connect(toggleMenu))
 UnloadSystem:TrackConnection(ToggleBtn.MouseButton1Click:Connect(toggleMenu))
 
 -- ========================================================
--- 5. МЕНЕДЖЕР ВКЛАДОК И КОМПОНЕНТЫ
+-- 8. ВКЛАДКИ И КОМПОНЕНТЫ
 -- ========================================================
 local function createContainer()
     local scroller = Instance.new("ScrollingFrame", contentArea)
     scroller.Size = UDim2.new(1, -10, 1, -10)
     scroller.Position = UDim2.new(0, 5, 0, 5)
     scroller.BackgroundTransparency = 1
-    scroller.CanvasSize = UDim2.new(0, 0, 0, 700)
+    scroller.CanvasSize = UDim2.new(0, 0, 0, 1050)
     scroller.ScrollBarThickness = 6
     scroller.ScrollBarImageColor3 = COLOR_BTN
     scroller.Visible = false
@@ -413,33 +665,39 @@ local function createContainer()
 end
 
 local CombatContainer = createContainer()
+local MovementContainer = createContainer()
 local VisualsContainer = createContainer()
+local ExtraContainer = createContainer()
 local MusicContainer = createContainer()
 local KillSoundContainer = createContainer()
 
 CombatContainer.Visible = true
 
-local function createTabBtn(text, container)
+local function createTabBtn(text)
     local btn = Instance.new("TextButton", sidebar)
-    btn.Size = UDim2.new(1, -12, 0, 28)
+    btn.Size = UDim2.new(1, -12, 0, 22)
     btn.BackgroundColor3 = COLOR_BTN
     btn.Text = text
     btn.TextColor3 = COLOR_TEXT
     btn.Font = MC_FONT
-    btn.TextSize = 15
+    btn.TextSize = 12
     btn.AutoButtonColor = false
     applyPixelBorder(btn, Color3.fromRGB(0, 0, 0), 2)
     return btn
 end
 
-local CombatTabBtn = createTabBtn("Combat", CombatContainer)
-local VisualsTabBtn = createTabBtn("Visuals", VisualsContainer)
-local MusicTabBtn = createTabBtn("Music", MusicContainer)
-local KillSoundTabBtn = createTabBtn("KillSound", KillSoundContainer)
+local CombatTabBtn = createTabBtn("Combat")
+local MovementTabBtn = createTabBtn("Movement")
+local VisualsTabBtn = createTabBtn("Visuals")
+local ExtraTabBtn = createTabBtn("Extra")
+local MusicTabBtn = createTabBtn("Music")
+local KillSoundTabBtn = createTabBtn("KillSound")
 
 local allTabs = {
     {Btn = CombatTabBtn, Cont = CombatContainer},
+    {Btn = MovementTabBtn, Cont = MovementContainer},
     {Btn = VisualsTabBtn, Cont = VisualsContainer},
+    {Btn = ExtraTabBtn, Cont = ExtraContainer},
     {Btn = MusicTabBtn, Cont = MusicContainer},
     {Btn = KillSoundTabBtn, Cont = KillSoundContainer}
 }
@@ -484,7 +742,7 @@ local function createMinecraftToggle(parent, text, settingKey, callback)
     applyPixelBorder(btn, Color3.fromRGB(0, 0, 0), 2)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -60, 1, 0)
+    label.Size = UDim2.new(1, -115, 1, 0)
     label.Position = UDim2.new(0, 8, 0, 0)
     label.BackgroundTransparency = 1
     label.Text = text
@@ -493,6 +751,18 @@ local function createMinecraftToggle(parent, text, settingKey, callback)
     label.TextSize = 14
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = btn
+
+    local bindBtn = Instance.new("TextButton")
+    bindBtn.Size = UDim2.new(0, 48, 0, 20)
+    bindBtn.Position = UDim2.new(1, -102, 0.5, -10)
+    bindBtn.BackgroundColor3 = COLOR_DARK_BG
+    local currentBind = Settings.Binds[settingKey]
+    bindBtn.Text = currentBind and ("[" .. currentBind.Name .. "]") or "[-]"
+    bindBtn.TextColor3 = COLOR_TEXT_YELLOW
+    bindBtn.Font = MC_FONT
+    bindBtn.TextSize = 11
+    bindBtn.Parent = btn
+    applyPixelBorder(bindBtn, Color3.fromRGB(0, 0, 0), 1)
 
     local statusBox = Instance.new("TextLabel")
     statusBox.Size = UDim2.new(0, 45, 0, 20)
@@ -505,23 +775,59 @@ local function createMinecraftToggle(parent, text, settingKey, callback)
     statusBox.Parent = btn
     applyPixelBorder(statusBox, Color3.fromRGB(0, 0, 0), 1)
 
-    UnloadSystem:TrackConnection(btn.MouseButton1Click:Connect(function()
-        Settings[settingKey] = not Settings[settingKey]
+    local function updateVisual()
         local active = Settings[settingKey]
         statusBox.BackgroundColor3 = active and Color3.fromRGB(60, 180, 60) or Color3.fromRGB(180, 60, 60)
         statusBox.Text = active and "ON" or "OFF"
+        
+        local bindKey = Settings.Binds[settingKey]
+        bindBtn.Text = bindKey and ("[" .. bindKey.Name .. "]") or "[-]"
+    end
+
+    UI_Toggles[settingKey] = updateVisual
+
+    UnloadSystem:TrackConnection(btn.MouseButton1Click:Connect(function()
+        toggleSetting(settingKey)
         SaveConfig()
         if callback then callback() end
+    end))
+
+    local function startBinding()
+        currentlyBindingFeature = settingKey
+        bindBtn.Text = "[...]"
+        bindBtn.TextColor3 = Color3.fromRGB(255, 170, 0)
+        
+        task.spawn(function()
+            while currentlyBindingFeature == settingKey do
+                task.wait(0.05)
+            end
+            updateVisual()
+            bindBtn.TextColor3 = COLOR_TEXT_YELLOW
+            SaveConfig()
+        end)
+    end
+
+    UnloadSystem:TrackConnection(bindBtn.MouseButton1Click:Connect(startBinding))
+    UnloadSystem:TrackConnection(btn.MouseButton2Click:Connect(startBinding))
+
+    UnloadSystem:TrackConnection(bindBtn.MouseButton2Click:Connect(function()
+        Settings.Binds[settingKey] = nil
+        updateVisual()
+        SaveConfig()
     end))
 
     return btn
 end
 
 -- ========================================================
--- 6. НАПОЛНЕНИЕ ВКЛАДОК
+-- 9. НАПОЛНЕНИЕ ВКЛАДОК
 -- ========================================================
+
 -- COMBAT
-createMinecraftToggle(CombatContainer, "Auto Parry & Aim", "AutoF")
+createMinecraftToggle(CombatContainer, "Auto Block", "AutoBlock")
+createMinecraftToggle(CombatContainer, "Auto Aim", "AutoAim")
+createMinecraftToggle(CombatContainer, "Anti-Fling Protection", "AntiFling")
+createMinecraftToggle(CombatContainer, "Cheater Detector", "CheaterDetector")
 
 local RangeLabel = Instance.new("TextLabel", CombatContainer)
 RangeLabel.Size = UDim2.new(1, -10, 0, 20)
@@ -579,12 +885,103 @@ UnloadSystem:TrackConnection(MinusDelay.MouseButton1Click:Connect(function()
     SaveConfig()
 end))
 
-createMinecraftToggle(CombatContainer, "Target HUD", "TargetHUD")
-createMinecraftToggle(CombatContainer, "Skill Cooldown HUD", "SkillHUD")
-createMinecraftToggle(CombatContainer, "Killstreak HUD", "KillstreakHUD")
-createMinecraftToggle(CombatContainer, "Music Player HUD", "MusicHUD")
+-- MOVEMENT
+createMinecraftToggle(MovementContainer, "Walk Speed", "SpeedEnabled")
 
--- VISUALS & CAMERA
+local SpeedLabel = Instance.new("TextLabel", MovementContainer)
+SpeedLabel.Size = UDim2.new(1, -10, 0, 20)
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.Text = "Speed: " .. Settings.SpeedValue
+SpeedLabel.TextColor3 = COLOR_TEXT_YELLOW
+SpeedLabel.Font = MC_FONT
+SpeedLabel.TextSize = 14
+SpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local SpeedFrame = Instance.new("Frame", MovementContainer)
+SpeedFrame.Size = UDim2.new(1, -10, 0, 28)
+SpeedFrame.BackgroundTransparency = 1
+
+local PlusSpeed = createMinecraftButton("+ Speed", SpeedFrame, UDim2.new(0.48, 0, 1, 0), UDim2.new(0, 0, 0, 0))
+local MinusSpeed = createMinecraftButton("- Speed", SpeedFrame, UDim2.new(0.48, 0, 1, 0), UDim2.new(0.52, 0, 0, 0))
+
+UnloadSystem:TrackConnection(PlusSpeed.MouseButton1Click:Connect(function()
+    Settings.SpeedValue = math.clamp(Settings.SpeedValue + 2, 16, 200)
+    SpeedLabel.Text = "Speed: " .. Settings.SpeedValue
+    SaveConfig()
+end))
+
+UnloadSystem:TrackConnection(MinusSpeed.MouseButton1Click:Connect(function()
+    Settings.SpeedValue = math.clamp(Settings.SpeedValue - 2, 16, 200)
+    SpeedLabel.Text = "Speed: " .. Settings.SpeedValue
+    SaveConfig()
+end))
+
+createMinecraftToggle(MovementContainer, "Run Accelerator", "SprintEnabled")
+
+local SprintLabel = Instance.new("TextLabel", MovementContainer)
+SprintLabel.Size = UDim2.new(1, -10, 0, 20)
+SprintLabel.BackgroundTransparency = 1
+SprintLabel.Text = "Sprint Speed: " .. Settings.SprintSpeedValue
+SprintLabel.TextColor3 = COLOR_TEXT_YELLOW
+SprintLabel.Font = MC_FONT
+SprintLabel.TextSize = 14
+SprintLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local SprintFrame = Instance.new("Frame", MovementContainer)
+SprintFrame.Size = UDim2.new(1, -10, 0, 28)
+SprintFrame.BackgroundTransparency = 1
+
+local PlusSprint = createMinecraftButton("+ Sprint", SprintFrame, UDim2.new(0.48, 0, 1, 0), UDim2.new(0, 0, 0, 0))
+local MinusSprint = createMinecraftButton("- Sprint", SprintFrame, UDim2.new(0.48, 0, 1, 0), UDim2.new(0.52, 0, 0, 0))
+
+UnloadSystem:TrackConnection(PlusSprint.MouseButton1Click:Connect(function()
+    Settings.SprintSpeedValue = math.clamp(Settings.SprintSpeedValue + 5, 20, 300)
+    SprintLabel.Text = "Sprint Speed: " .. Settings.SprintSpeedValue
+    SaveConfig()
+end))
+
+UnloadSystem:TrackConnection(MinusSprint.MouseButton1Click:Connect(function()
+    Settings.SprintSpeedValue = math.clamp(Settings.SprintSpeedValue - 5, 20, 300)
+    SprintLabel.Text = "Sprint Speed: " .. Settings.SprintSpeedValue
+    SaveConfig()
+end))
+
+createMinecraftToggle(MovementContainer, "Fly (No Tilt)", "FlyEnabled")
+
+local FlyLabel = Instance.new("TextLabel", MovementContainer)
+FlyLabel.Size = UDim2.new(1, -10, 0, 20)
+FlyLabel.BackgroundTransparency = 1
+FlyLabel.Text = "Fly Speed: " .. Settings.FlySpeed
+FlyLabel.TextColor3 = COLOR_TEXT_YELLOW
+FlyLabel.Font = MC_FONT
+FlyLabel.TextSize = 14
+FlyLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local FlyFrame = Instance.new("Frame", MovementContainer)
+FlyFrame.Size = UDim2.new(1, -10, 0, 28)
+FlyFrame.BackgroundTransparency = 1
+
+local PlusFly = createMinecraftButton("+ Fly", FlyFrame, UDim2.new(0.48, 0, 1, 0), UDim2.new(0, 0, 0, 0))
+local MinusFly = createMinecraftButton("- Fly", FlyFrame, UDim2.new(0.48, 0, 1, 0), UDim2.new(0.52, 0, 0, 0))
+
+UnloadSystem:TrackConnection(PlusFly.MouseButton1Click:Connect(function()
+    Settings.FlySpeed = math.clamp(Settings.FlySpeed + 5, 10, 200)
+    FlyLabel.Text = "Fly Speed: " .. Settings.FlySpeed
+    SaveConfig()
+end))
+
+UnloadSystem:TrackConnection(MinusFly.MouseButton1Click:Connect(function()
+    Settings.FlySpeed = math.clamp(Settings.FlySpeed - 5, 10, 200)
+    FlyLabel.Text = "Fly Speed: " .. Settings.FlySpeed
+    SaveConfig()
+end))
+
+-- VISUALS
+createMinecraftToggle(VisualsContainer, "Target HUD", "TargetHUD")
+createMinecraftToggle(VisualsContainer, "Music HUD", "MusicHUD")
+createMinecraftToggle(VisualsContainer, "Killstreak HUD", "KillstreakHUD")
+createMinecraftToggle(VisualsContainer, "Skill Cooldown HUD", "SkillHUD")
+createMinecraftToggle(VisualsContainer, "Keybind HUD", "KeybindHUD")
 createMinecraftToggle(VisualsContainer, "Resolution Stretch", "ResolutionEnabled")
 
 local ResLabel = Instance.new("TextLabel", VisualsContainer)
@@ -645,26 +1042,7 @@ UnloadSystem:TrackConnection(MinusFOV.MouseButton1Click:Connect(function()
     SaveConfig()
 end))
 
-createMinecraftToggle(VisualsContainer, "Target ESP", "TargetESP")
-
-local ESPStyleLabel = Instance.new("TextLabel", VisualsContainer)
-ESPStyleLabel.Size = UDim2.new(1, -10, 0, 20)
-ESPStyleLabel.BackgroundTransparency = 1
-ESPStyleLabel.Text = "ESP Style: " .. Settings.ESPStyle
-ESPStyleLabel.TextColor3 = COLOR_TEXT_YELLOW
-ESPStyleLabel.Font = MC_FONT
-ESPStyleLabel.TextSize = 14
-ESPStyleLabel.TextXAlignment = Enum.TextXAlignment.Left
-
-local StyleBtn = createMinecraftButton("Change Style [ Orbs/Ring/Box/Arrows ]", VisualsContainer)
-UnloadSystem:TrackConnection(StyleBtn.MouseButton1Click:Connect(function()
-    if Settings.ESPStyle == "Orbs" then Settings.ESPStyle = "Ring"
-    elseif Settings.ESPStyle == "Ring" then Settings.ESPStyle = "Box"
-    elseif Settings.ESPStyle == "Box" then Settings.ESPStyle = "Arrows"
-    else Settings.ESPStyle = "Orbs" end
-    ESPStyleLabel.Text = "ESP Style: " .. Settings.ESPStyle
-    SaveConfig()
-end))
+createMinecraftToggle(VisualsContainer, "Draw 2D ESP", "TargetESP")
 
 local function UpdateVisuals(char)
     if not char then return end
@@ -737,9 +1115,19 @@ end)
 createMinecraftToggle(VisualsContainer, "Watermark", "Watermark")
 createMinecraftToggle(VisualsContainer, "Client Users ESP", "ClientUsersESP")
 
--- MUSIC
-createMinecraftToggle(MusicContainer, "Ignore Friends", "IgnoreFriends")
+-- EXTRA
+createMinecraftToggle(ExtraContainer, "Ignore Friends", "IgnoreFriends")
 
+local UninjectBtn = Instance.new("TextButton", ExtraContainer)
+UninjectBtn.Size = UDim2.new(1, -10, 0, 32)
+UninjectBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+UninjectBtn.Text = "UNINJECT SCRIPT"
+UninjectBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+UninjectBtn.Font = MC_FONT
+UninjectBtn.TextSize = 16
+applyPixelBorder(UninjectBtn, Color3.fromRGB(0, 0, 0), 2)
+
+-- MUSIC
 local OpenMusicMenuBtn = createMinecraftButton("Open Music Menu", MusicContainer)
 local TrackNameBox = Instance.new("TextBox", MusicContainer)
 TrackNameBox.Size = UDim2.new(1, -10, 0, 28)
@@ -762,15 +1150,6 @@ TrackIDBox.TextSize = 14
 applyPixelBorder(TrackIDBox, Color3.fromRGB(0, 0, 0), 2)
 
 local AddTrackBtn = createMinecraftButton("Add Track", MusicContainer)
-
-local UninjectBtn = Instance.new("TextButton", MusicContainer)
-UninjectBtn.Size = UDim2.new(1, -10, 0, 32)
-UninjectBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-UninjectBtn.Text = "UNINJECT SCRIPT"
-UninjectBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-UninjectBtn.Font = MC_FONT
-UninjectBtn.TextSize = 16
-applyPixelBorder(UninjectBtn, Color3.fromRGB(0, 0, 0), 2)
 
 -- KILL SOUND
 createMinecraftToggle(KillSoundContainer, "Kill Sound Active", "KillSoundEnabled")
@@ -799,10 +1178,10 @@ applyPixelBorder(KSIDBox, Color3.fromRGB(0, 0, 0), 2)
 local AddKSBtn = createMinecraftButton("Add Kill Sound", KillSoundContainer)
 
 -- ========================================================
--- 7. ОБЪЕКТЫ И ВСПЛЫВАЮЩИЕ ОКНА
+-- 10. HUDS И ВСПОМОГАТЕЛЬНЫЕ ОКНА
 -- ========================================================
 local RangePart = Instance.new("Part")
-RangePart.Name = "PixelAutoFRange"
+RangePart.Name = "AutoFRange"
 RangePart.Anchored = true
 RangePart.CanCollide = false
 RangePart.CanQuery = false
@@ -814,57 +1193,11 @@ RangePart.Parent = Workspace
 RangePart.Orientation = Vector3.new(0, 0, 90)
 UnloadSystem:TrackInstance(RangePart)
 
-local ESPFolder = Instance.new("Folder", Workspace)
-ESPFolder.Name = "PixelESPFolder"
-UnloadSystem:TrackInstance(ESPFolder)
-
 local ClientUsersFolder = Instance.new("Folder", Workspace)
 ClientUsersFolder.Name = "PixelClientUsersFolder"
 UnloadSystem:TrackInstance(ClientUsersFolder)
 
-local Orbs = {}
-for i = 1, 3 do
-    local orb = Instance.new("Part")
-    orb.Shape = Enum.PartType.Ball
-    orb.Size = Vector3.new(0.8, 0.8, 0.8)
-    orb.Material = Enum.Material.Neon
-    orb.Color = Color3.fromRGB(255, 255, 85)
-    orb.Anchored = true
-    orb.CanCollide = false
-    orb.Transparency = 1
-    orb.Parent = ESPFolder
-    table.insert(Orbs, orb)
-end
-
-local ESPRing = Instance.new("Part")
-ESPRing.Shape = Enum.PartType.Cylinder
-ESPRing.Size = Vector3.new(0.2, 4, 4)
-ESPRing.Material = Enum.Material.Neon
-ESPRing.Color = Color3.fromRGB(255, 255, 85)
-ESPRing.Anchored = true
-ESPRing.CanCollide = false
-ESPRing.Transparency = 1
-ESPRing.Orientation = Vector3.new(0, 0, 90)
-ESPRing.Parent = ESPFolder
-
-local ESPHighlight = Instance.new("Highlight")
-ESPHighlight.FillColor = Color3.fromRGB(255, 255, 85)
-ESPHighlight.FillTransparency = 0.7
-ESPHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-ESPHighlight.OutlineTransparency = 0
-ESPHighlight.Enabled = false
-ESPHighlight.Parent = ESPFolder
-
-local ESPArrow = Instance.new("Part")
-ESPArrow.Size = Vector3.new(1.5, 0.2, 1.5)
-ESPArrow.Material = Enum.Material.Neon
-ESPArrow.Color = Color3.fromRGB(255, 255, 85)
-ESPArrow.Anchored = true
-ESPArrow.CanCollide = false
-ESPArrow.Transparency = 1
-ESPArrow.Parent = ESPFolder
-
--- HUD TARGET
+-- TARGET HUD
 local HUDFrame = Instance.new("Frame")
 HUDFrame.Size = UDim2.new(0, 220, 0, 60)
 HUDFrame.Position = UDim2.new(0.5, -110, 0, 15)
@@ -982,6 +1315,57 @@ for i, keyName in ipairs(keysList) do
             skillSlots[keyName].CooldownEnd = tick() + cdDuration
         end
     end))
+end
+
+-- KEYBIND HUD
+local KeybindHUDFrame = Instance.new("Frame")
+KeybindHUDFrame.Size = UDim2.new(0, 170, 0, 160)
+KeybindHUDFrame.Position = UDim2.new(0, 10, 0.45, 0)
+KeybindHUDFrame.BackgroundColor3 = COLOR_DARK_BG
+KeybindHUDFrame.Parent = ScreenGui
+applyPixelBorder(KeybindHUDFrame, Color3.fromRGB(0, 0, 0), 2)
+MakeDraggable(KeybindHUDFrame, nil, "KeybindHUD")
+
+local KbTitle = Instance.new("TextLabel", KeybindHUDFrame)
+KbTitle.Size = UDim2.new(1, 0, 0, 20)
+KbTitle.Position = UDim2.new(0, 0, 0, 4)
+KbTitle.BackgroundTransparency = 1
+KbTitle.Text = "KEYBINDS"
+KbTitle.TextColor3 = COLOR_TEXT_YELLOW
+KbTitle.Font = MC_FONT
+KbTitle.TextSize = 14
+
+local KbList = Instance.new("Frame", KeybindHUDFrame)
+KbList.Size = UDim2.new(1, -10, 1, -28)
+KbList.Position = UDim2.new(0, 5, 0, 24)
+KbList.BackgroundTransparency = 1
+
+local kbLayout = Instance.new("UIListLayout", KbList)
+kbLayout.SortOrder = Enum.SortOrder.LayoutOrder
+kbLayout.Padding = UDim.new(0, 2)
+
+local bindDisplayItems = {
+    {Name = "Auto Block", Key = "AutoBlock"},
+    {Name = "Auto Aim", Key = "AutoAim"},
+    {Name = "Anti-Fling", Key = "AntiFling"},
+    {Name = "Detector", Key = "CheaterDetector"},
+    {Name = "Walk Speed", Key = "SpeedEnabled"},
+    {Name = "Run Boost", Key = "SprintEnabled"},
+    {Name = "Fly", Key = "FlyEnabled"},
+    {Name = "ESP", Key = "TargetESP"},
+    {Name = "Fullbright", Key = "Fullbright"}
+}
+
+local bindLabels = {}
+for _, item in ipairs(bindDisplayItems) do
+    local lbl = Instance.new("TextLabel", KbList)
+    lbl.Size = UDim2.new(1, 0, 0, 16)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = MC_FONT
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Visible = false
+    bindLabels[item.Key] = lbl
 end
 
 -- MUSIC HUD
@@ -1138,7 +1522,7 @@ WatermarkText.TextSize = 14
 WatermarkText.TextXAlignment = Enum.TextXAlignment.Center
 
 -- ========================================================
--- 8. ЛОГИКА МУЗЫКИ И СИСТЕМНЫЕ ФУНКЦИИ
+-- 11. ЛОГИКА МУЗЫКИ И ВЫГРУЗКИ
 -- ========================================================
 local function UpdateMusicHUD()
     if currentPlayingIndex > 0 and musicList[currentPlayingIndex] then
@@ -1348,7 +1732,6 @@ UnloadSystem:TrackConnection(AddKSBtn.MouseButton1Click:Connect(function()
     end
 end))
 
--- UNINJECT LOGIC
 function UnloadSystem:Unload()
     for _, conn in ipairs(self.Connections) do
         if conn and conn.Connected then conn:Disconnect() end
@@ -1356,8 +1739,13 @@ function UnloadSystem:Unload()
     for _, inst in ipairs(self.Instances) do
         if inst and inst.Parent then inst:Destroy() end
     end
+    for _, draw in ipairs(self.Drawings) do
+        pcall(function() draw:Remove() end)
+    end
     table.clear(self.Connections)
     table.clear(self.Instances)
+    table.clear(self.Drawings)
+    table.clear(ESP_Cache)
 
     if LocalPlayer.Character then
         local char = LocalPlayer.Character
@@ -1385,7 +1773,7 @@ UnloadSystem:TrackConnection(UninjectBtn.MouseButton1Click:Connect(function()
 end))
 
 -- ========================================================
--- 9. БОЕВАЯ ЛОГИКА, КАМЕРА И ЭФФЕКТЫ
+-- 12. ДИНАМИЧЕСКИЙ БЛОК, КАМЕРА И ОСНОВНОЙ ЦИКЛ
 -- ========================================================
 local gameName = "Roblox Game"
 pcall(function()
@@ -1452,24 +1840,36 @@ local function MonitorPlayer(player)
         
         UnloadSystem:TrackConnection(animator.AnimationPlayed:Connect(function(track)
             if Settings.IgnoreFriends and IsFriend(player) then return end
-            if not Settings.AutoF or currentTarget ~= char then return end
+            if not Settings.AutoBlock or currentTarget ~= char then return end
 
             if IsValidAnimation(track) then
                 task.spawn(function()
                     if Settings.ReactionDelay > 0 then task.wait(Settings.ReactionDelay) end
-                    if not Settings.AutoF or currentTarget ~= char then return end
+                    if not Settings.AutoBlock or currentTarget ~= char then return end
 
                     if not isBlocking then
                         isBlocking = true
                         currentBlockTrack = track
                         pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game) end)
-                        
-                        task.delay(Settings.BlockDuration, function()
+
+                        local animSpeed = (track.Speed and track.Speed > 0) and track.Speed or 1.0
+                        local animLength = (track.Length and track.Length > 0) and track.Length or 0.8
+                        local realDuration = math.max(0.1, (animLength / animSpeed) - Settings.ReactionDelay)
+
+                        local stopConn
+                        local function releaseBlock()
                             if isBlocking and currentBlockTrack == track then
                                 isBlocking = false
                                 currentBlockTrack = nil
                                 pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game) end)
                             end
+                            if stopConn then stopConn:Disconnect() end
+                        end
+
+                        stopConn = UnloadSystem:TrackConnection(track.Stopped:Connect(releaseBlock))
+
+                        task.delay(realDuration, function()
+                            releaseBlock()
                         end)
                     end
                 end)
@@ -1489,8 +1889,10 @@ local currentFps = 60
 local lastTargetHum = nil
 local targetDiedConn = nil
 
-UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
-    -- ОБРАБОТКА КАМЕРЫ И РАЗРЕШЕНИЯ
+UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function(dt)
+    local rainbowColor = Color3.fromHSV((tick() % 3) / 3, 1, 1)
+
+    -- КАМЕРА
     local cam = Workspace.CurrentCamera
     if cam then
         if Settings.ResolutionEnabled then
@@ -1510,6 +1912,7 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
         lastFpsUpdate = tick()
     end
 
+    -- SKILLS
     for key, data in pairs(skillSlots) do
         local timeLeft = data.CooldownEnd - tick()
         if timeLeft > 0 then
@@ -1519,6 +1922,27 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
             data.Status.Text = "READY"
             data.Status.TextColor3 = Color3.fromRGB(60, 180, 60)
         end
+    end
+
+    -- ДИНАМИЧЕСКИЙ KEYBIND HUD (Скрытие/Отображение назначенных биндов)
+    KeybindHUDFrame.Visible = Settings.KeybindHUD
+    if Settings.KeybindHUD then
+        local visibleCount = 0
+        for _, item in ipairs(bindDisplayItems) do
+            local lbl = bindLabels[item.Key]
+            local bindKey = Settings.Binds[item.Key]
+            
+            if bindKey then
+                visibleCount = visibleCount + 1
+                lbl.Visible = true
+                local state = Settings[item.Key] and "[ON]" or "[OFF]"
+                lbl.Text = string.format("[%s] %s: %s", bindKey.Name, item.Name, state)
+                lbl.TextColor3 = Settings[item.Key] and Color3.fromRGB(60, 180, 60) or COLOR_TEXT
+            else
+                lbl.Visible = false
+            end
+        end
+        KeybindHUDFrame.Size = UDim2.new(0, 170, 0, math.max(30, 28 + (visibleCount * 18)))
     end
 
     Watermark.Visible = Settings.Watermark
@@ -1544,11 +1968,112 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
     local localChar = LocalPlayer.Character
     if not localChar then return end
     local rootLocal = localChar:FindFirstChild("HumanoidRootPart")
+    local humLocal = localChar:FindFirstChildOfClass("Humanoid")
     if not rootLocal then return end
+
+    -- ANTI-FLING LOGIC (Защита локального игрока)
+    if Settings.AntiFling and rootLocal then
+        if rootLocal.AssemblyLinearVelocity.Magnitude > 300 or rootLocal.AssemblyAngularVelocity.Magnitude > 300 then
+            rootLocal.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            rootLocal.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+
+    -- CHEATER DETECTOR & NEUTRALIZER LOGIC
+    if Settings.CheaterDetector then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                local char = player.Character
+                local root = char:FindFirstChild("HumanoidRootPart")
+                local humanoid = char:FindFirstChildOfClass("Humanoid")
+                
+                if root and humanoid and humanoid.Health > 0 then
+                    local linVel = root.AssemblyLinearVelocity
+                    local angVel = root.AssemblyAngularVelocity
+                    
+                    local isSpinningFast = angVel.Magnitude > 50
+                    local isMovingTooFast = linVel.Magnitude > 200
+                    local isSpazzingVertical = math.abs(linVel.Y) > 150
+
+                    if (isSpinningFast or isMovingTooFast or isSpazzingVertical) then
+                        if not flaggedCheaters[player] then
+                            flaggedCheaters[player] = true
+                            
+                            local reason = "Unknown"
+                            if isSpinningFast then reason = "Fast Spin (Spinbot/Fling)" end
+                            if isSpazzingVertical then reason = "Vertical Teleport / Spazzing" end
+                            if isMovingTooFast then reason = "Extreme Velocity" end
+
+                            pcall(function()
+                                StarterGui:SetCore("SendNotification", {
+                                    Title = "тут хуесос!",
+                                    Text = player.Name .. " использует читы! Причина: " .. reason,
+                                    Duration = 3
+                                })
+                            end)
+                            print("[ANTI-FLING DETECTED]: " .. player.Name .. " (" .. reason .. ")")
+                        end
+
+                        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                        
+                        local distance = (rootLocal.Position - root.Position).Magnitude
+                        if distance < 10 then
+                            for _, part in ipairs(char:GetDescendants()) do
+                                if part:IsA("BasePart") then
+                                    part.CanCollide = false
+                                end
+                            end
+                        end
+                    else
+                        if flaggedCheaters[player] then
+                            flaggedCheaters[player] = nil
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- MOVEMENT SPEED & BOOST
+    if humLocal and not Settings.FlyEnabled then
+        local activeSpeed = 0
+        if Settings.SprintEnabled and isSprinting then
+            activeSpeed = Settings.SprintSpeedValue
+        elseif Settings.SpeedEnabled then
+            activeSpeed = Settings.SpeedValue
+        end
+
+        if activeSpeed > 0 and humLocal.MoveDirection.Magnitude > 0 then
+            rootLocal.CFrame = rootLocal.CFrame + (humLocal.MoveDirection * (activeSpeed * dt))
+        end
+    end
+
+    -- FLY LOGIC
+    if Settings.FlyEnabled and cam then
+        rootLocal.AssemblyLinearVelocity = Vector3.zero
+
+        local moveVec = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveVec += cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveVec -= cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveVec -= cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveVec += cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveVec += Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveVec -= Vector3.new(0, 1, 0) end
+
+        if moveVec.Magnitude > 0 then
+            rootLocal.CFrame = rootLocal.CFrame + (moveVec.Unit * (Settings.FlySpeed * dt))
+        end
+
+        local horizontalLook = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+        if horizontalLook.Magnitude > 0 then
+            rootLocal.CFrame = CFrame.lookAt(rootLocal.Position, rootLocal.Position + horizontalLook)
+        end
+    end
 
     RangePart.Size = Vector3.new(0.2, Settings.Range * 2, Settings.Range * 2)
     RangePart.Position = rootLocal.Position - Vector3.new(0, 2.8, 0)
-    RangePart.Transparency = Settings.AutoF and 0.6 or 1
+    RangePart.Transparency = (Settings.AutoBlock or Settings.AutoAim) and 0.6 or 1
 
     if Settings.Fullbright then
         Lighting.Brightness = 2
@@ -1563,9 +2088,10 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
             if player ~= LocalPlayer and player.Character then
                 local char = player.Character
                 local head = char:FindFirstChild("Head")
-                if char:GetAttribute("PixelsClientUser") == true and head then
+                local isPixelUser = pixelClientUsers[player] or char:GetAttribute("PixelsClientUser") == true
+                if isPixelUser and head then
                     local billboard = Instance.new("BillboardGui")
-                    billboard.Size = UDim2.new(0, 120, 0, 30)
+                    billboard.Size = UDim2.new(0, 140, 0, 30)
                     billboard.StudsOffset = Vector3.new(0, 2.5, 0)
                     billboard.AlwaysOnTop = true
                     billboard.Parent = ClientUsersFolder
@@ -1575,7 +2101,7 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
                     tagLabel.Size = UDim2.new(1, 0, 1, 0)
                     tagLabel.BackgroundTransparency = 1
                     tagLabel.Text = "[Pixel Client User]"
-                    tagLabel.TextColor3 = COLOR_TEXT_YELLOW
+                    tagLabel.TextColor3 = rainbowColor
                     tagLabel.Font = MC_FONT
                     tagLabel.TextSize = 14
                 end
@@ -1586,7 +2112,7 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
     local closestTarget = nil
     local shortestDist = Settings.Range
 
-    if Settings.AutoF or Settings.TargetESP then
+    if Settings.AutoBlock or Settings.AutoAim or Settings.TargetESP then
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
                 local isFriend = Settings.IgnoreFriends and IsFriend(player) or false
@@ -1628,38 +2154,75 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function()
         lastTargetHum = nil
     end
 
-    if currentTarget and Settings.AutoF then
+    if currentTarget and Settings.AutoAim then
         local tRoot = currentTarget:FindFirstChild("HumanoidRootPart")
         if tRoot then FaceTarget(tRoot) end
     end
 
-    for _, orb in ipairs(Orbs) do orb.Transparency = 1 end
-    ESPRing.Transparency = 1
-    ESPHighlight.Enabled = false
-    ESPArrow.Transparency = 1
+    -- DRAWING ESP RENDER LOOP
+    for player, esp in pairs(ESP_Cache) do
+        local char = player.Character
+        local isFriend = Settings.IgnoreFriends and IsFriend(player) or false
+        local isPixelUser = pixelClientUsers[player] or (char and char:GetAttribute("PixelsClientUser") == true)
+        
+        if Settings.TargetESP and char and not isFriend and cam then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
 
-    if Settings.TargetESP and currentTarget then
-        local tRoot = currentTarget:FindFirstChild("HumanoidRootPart")
-        if tRoot then
-            if Settings.ESPStyle == "Orbs" then
-                local time = tick() * 3
-                local radius = 3
-                for i, orb in ipairs(Orbs) do
-                    orb.Transparency = 0.3
-                    local offset = (math.pi * 2 / #Orbs) * i
-                    orb.Position = tRoot.Position + Vector3.new(math.cos(time + offset) * radius, math.sin(time * 2 + offset) * 1.5, math.sin(time + offset) * radius)
+            if root and hum and hum.Health > 0 then
+                local boxPos, boxSize = Get2DBoundingBox(char, cam)
+
+                if boxPos and boxSize then
+                    esp.BoxOutline.Size = boxSize
+                    esp.BoxOutline.Position = boxPos
+                    esp.BoxOutline.Visible = true
+
+                    esp.Box.Size = boxSize
+                    esp.Box.Position = boxPos
+                    
+                    if isPixelUser then
+                        esp.Box.Color = rainbowColor
+                    else
+                        esp.Box.Color = (char == currentTarget) and Color3.fromRGB(255, 80, 80) or COLOR_TEXT_YELLOW
+                    end
+                    esp.Box.Visible = true
+
+                    local dist = math.floor((rootLocal.Position - root.Position).Magnitude)
+                    esp.Name.Text = (isPixelUser and "[PC] " or "") .. player.DisplayName .. " [" .. dist .. "m]"
+                    esp.Name.Position = Vector2.new(boxPos.X + boxSize.X / 2, boxPos.Y - 18)
+                    esp.Name.Color = isPixelUser and rainbowColor or Color3.fromRGB(255, 255, 255)
+                    esp.Name.Visible = true
+
+                    local hpPercent = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                    esp.HealthBg.Size = Vector2.new(3, boxSize.Y)
+                    esp.HealthBg.Position = Vector2.new(boxPos.X - 6, boxPos.Y)
+                    esp.HealthBg.Visible = true
+
+                    local barHeight = boxSize.Y * hpPercent
+                    esp.HealthBar.Size = Vector2.new(3, barHeight)
+                    esp.HealthBar.Position = Vector2.new(boxPos.X - 6, boxPos.Y + (boxSize.Y - barHeight))
+                    esp.HealthBar.Color = Color3.fromRGB(255 * (1 - hpPercent), 255 * hpPercent, 50)
+                    esp.HealthBar.Visible = true
+                else
+                    esp.BoxOutline.Visible = false
+                    esp.Box.Visible = false
+                    esp.Name.Visible = false
+                    esp.HealthBg.Visible = false
+                    esp.HealthBar.Visible = false
                 end
-            elseif Settings.ESPStyle == "Ring" then
-                ESPRing.Transparency = 0.3
-                ESPRing.Position = tRoot.Position - Vector3.new(0, 2.7, 0)
-            elseif Settings.ESPStyle == "Box" then
-                ESPHighlight.Adornee = currentTarget
-                ESPHighlight.Enabled = true
-            elseif Settings.ESPStyle == "Arrows" then
-                ESPArrow.Transparency = 0.2
-                ESPArrow.Position = tRoot.Position + Vector3.new(0, 3.5, 0)
-                ESPArrow.CFrame = CFrame.new(ESPArrow.Position) * CFrame.Angles(0, tick() * 4, 0)
+            else
+                esp.BoxOutline.Visible = false
+                esp.Box.Visible = false
+                esp.Name.Visible = false
+                esp.HealthBg.Visible = false
+                esp.HealthBar.Visible = false
             end
+        else
+            esp.BoxOutline.Visible = false
+            esp.Box.Visible = false
+            esp.Name.Visible = false
+            esp.HealthBg.Visible = false
+            esp.HealthBar.Visible = false
         end
     end
 

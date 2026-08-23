@@ -1,16 +1,21 @@
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
-
 local LocalPlayer = Players.LocalPlayer
 
--- Поддерживаемая игра (только TSB)
+-- Поддерживаемые игры
 local SupportedGames = {
     {
         Name = "The Strongest Battlegrounds (TSB)",
         PlaceId = 10449761463,
         Description = "Основной режим: боевой клиент, ESP, прицеливание, музыка.",
-        LoadstringCode = 'loadstring(game:HttpGet("https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/1"))()'
+        ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/1"
+    },
+    {
+        Name = "War Tycoon",
+        PlaceId = 31490825,
+        Description = "Aim, No Recoil, Wallbang, ESP. Solara/Xeno не поддерживаются.",
+        ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/2"
     }
 }
 
@@ -28,8 +33,8 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Window = Instance.new("Frame", ScreenGui)
-Window.Size = UDim2.new(0, 520, 0, 280)
-Window.Position = UDim2.new(0.5, -260, 0.5, -140)
+Window.Size = UDim2.new(0, 520, 0, 360)
+Window.Position = UDim2.new(0.5, -260, 0.5, -180)
 Window.BackgroundColor3 = Color3.fromRGB(30, 25, 48)
 Window.BorderSizePixel = 0
 Instance.new("UICorner", Window).CornerRadius = UDim.new(0, 14)
@@ -59,7 +64,6 @@ CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.TextSize = 14
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 8)
-
 CloseBtn.MouseButton1Click:Connect(function()
     ScreenGui:Destroy()
 end)
@@ -82,7 +86,7 @@ StatusText.TextSize = 13
 StatusText.TextWrapped = true
 StatusText.TextXAlignment = Enum.TextXAlignment.Left
 
--- Список игр (одна карточка TSB)
+-- Список игр
 local ScrollingList = Instance.new("ScrollingFrame", Window)
 ScrollingList.Size = UDim2.new(1, -30, 1, -120)
 ScrollingList.Position = UDim2.new(0, 15, 0, 115)
@@ -141,8 +145,13 @@ for _, gameData in ipairs(SupportedGames) do
     LaunchBtn.MouseButton1Click:Connect(function()
         if gameData.PlaceId == currentPlaceId then
             ScreenGui:Destroy()
-            print("[Pixel Hub] Запуск скрипта TSB...")
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/1"))()
+            print("[Pixel Hub] Запуск: " .. gameData.Name)
+            local ok, err = pcall(function()
+                loadstring(game:HttpGet(gameData.ScriptUrl))()
+            end)
+            if not ok then
+                warn("[Pixel Hub] Ошибка загрузки: " .. tostring(err))
+            end
         end
     end)
 end

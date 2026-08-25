@@ -1,6 +1,8 @@
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 
 -- Поддерживаемые игры
@@ -26,18 +28,114 @@ pcall(function()
     if info and info.Name then currentGameInfo = info.Name end
 end)
 
+-- Blur
+local blur = Instance.new("BlurEffect")
+blur.Name = "PixelHubBlur"
+blur.Size = 0
+blur.Parent = Lighting
+TweenService:Create(blur, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+    Size = 24
+}):Play()
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "PixelClientHub"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 999999
+ScreenGui.IgnoreGuiInset = true
 ScreenGui.Parent = CoreGui
 
+local function cleanupBlur()
+    if blur and blur.Parent then
+        local t = TweenService:Create(blur, TweenInfo.new(0.35), {Size = 0})
+        t:Play()
+        t.Completed:Connect(function()
+            pcall(function() blur:Destroy() end)
+        end)
+    end
+end
+
+-- Затемнение / "заблюренный" фон
+local Dim = Instance.new("Frame", ScreenGui)
+Dim.Name = "Dim"
+Dim.Size = UDim2.new(1, 0, 1, 0)
+Dim.BackgroundColor3 = Color3.fromRGB(10, 8, 18)
+Dim.BackgroundTransparency = 1
+Dim.BorderSizePixel = 0
+TweenService:Create(Dim, TweenInfo.new(0.45), {BackgroundTransparency = 0.35}):Play()
+
+-- ===== LOADING OVERLAY =====
+local LoadOverlay = Instance.new("Frame", ScreenGui)
+LoadOverlay.Name = "LoadOverlay"
+LoadOverlay.Size = UDim2.new(1, 0, 1, 0)
+LoadOverlay.BackgroundColor3 = Color3.fromRGB(18, 14, 32)
+LoadOverlay.BackgroundTransparency = 0.15
+LoadOverlay.BorderSizePixel = 0
+LoadOverlay.ZIndex = 50
+
+local LoadCenter = Instance.new("Frame", LoadOverlay)
+LoadCenter.Size = UDim2.new(0, 320, 0, 120)
+LoadCenter.Position = UDim2.new(0.5, -160, 0.5, -60)
+LoadCenter.BackgroundTransparency = 1
+LoadCenter.ZIndex = 51
+
+local LoadTitle = Instance.new("TextLabel", LoadCenter)
+LoadTitle.Size = UDim2.new(1, 0, 0, 40)
+LoadTitle.BackgroundTransparency = 1
+LoadTitle.Text = "⚡ PIXEL CLIENT"
+LoadTitle.TextColor3 = Color3.fromRGB(225, 110, 255)
+LoadTitle.Font = Enum.Font.GothamBold
+LoadTitle.TextSize = 28
+LoadTitle.ZIndex = 52
+
+local LoadSub = Instance.new("TextLabel", LoadCenter)
+LoadSub.Size = UDim2.new(1, 0, 0, 20)
+LoadSub.Position = UDim2.new(0, 0, 0, 40)
+LoadSub.BackgroundTransparency = 1
+LoadSub.Text = "Loading hub..."
+LoadSub.TextColor3 = Color3.fromRGB(170, 160, 195)
+LoadSub.Font = Enum.Font.Gotham
+LoadSub.TextSize = 13
+LoadSub.ZIndex = 52
+
+local BarBg = Instance.new("Frame", LoadCenter)
+BarBg.Size = UDim2.new(1, 0, 0, 8)
+BarBg.Position = UDim2.new(0, 0, 0, 78)
+BarBg.BackgroundColor3 = Color3.fromRGB(42, 35, 66)
+BarBg.BorderSizePixel = 0
+BarBg.ZIndex = 52
+Instance.new("UICorner", BarBg).CornerRadius = UDim.new(1, 0)
+
+local BarFill = Instance.new("Frame", BarBg)
+BarFill.Size = UDim2.new(0, 0, 1, 0)
+BarFill.BackgroundColor3 = Color3.fromRGB(180, 90, 255)
+BarFill.BorderSizePixel = 0
+BarFill.ZIndex = 53
+Instance.new("UICorner", BarFill).CornerRadius = UDim.new(1, 0)
+
+local LoadPct = Instance.new("TextLabel", LoadCenter)
+LoadPct.Size = UDim2.new(1, 0, 0, 18)
+LoadPct.Position = UDim2.new(0, 0, 0, 92)
+LoadPct.BackgroundTransparency = 1
+LoadPct.Text = "0%"
+LoadPct.TextColor3 = Color3.fromRGB(200, 190, 220)
+LoadPct.Font = Enum.Font.GothamMedium
+LoadPct.TextSize = 12
+LoadPct.ZIndex = 52
+
+-- ===== MAIN WINDOW (сначала скрыт) =====
 local Window = Instance.new("Frame", ScreenGui)
 Window.Size = UDim2.new(0, 520, 0, 360)
-Window.Position = UDim2.new(0.5, -260, 0.5, -180)
+Window.Position = UDim2.new(0.5, -260, 0.5, -185)
 Window.BackgroundColor3 = Color3.fromRGB(30, 25, 48)
 Window.BorderSizePixel = 0
+Window.Visible = false
+Window.BackgroundTransparency = 0.05
 Instance.new("UICorner", Window).CornerRadius = UDim.new(0, 14)
+
+local Stroke = Instance.new("UIStroke", Window)
+Stroke.Color = Color3.fromRGB(140, 70, 230)
+Stroke.Thickness = 1.2
+Stroke.Transparency = 0.45
 
 -- Шапка
 local TopBar = Instance.new("Frame", Window)
@@ -54,7 +152,6 @@ Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextXAlignment = Enum.TextXAlignment.Left
 
--- Кнопка закрытия (крестик)
 local CloseBtn = Instance.new("TextButton", TopBar)
 CloseBtn.Size = UDim2.new(0, 28, 0, 28)
 CloseBtn.Position = UDim2.new(1, -38, 0.5, -14)
@@ -65,10 +162,10 @@ CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.TextSize = 14
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 8)
 CloseBtn.MouseButton1Click:Connect(function()
+    cleanupBlur()
     ScreenGui:Destroy()
 end)
 
--- Статус текущей игры
 local StatusCard = Instance.new("Frame", Window)
 StatusCard.Size = UDim2.new(1, -30, 0, 50)
 StatusCard.Position = UDim2.new(0, 15, 0, 55)
@@ -86,7 +183,6 @@ StatusText.TextSize = 13
 StatusText.TextWrapped = true
 StatusText.TextXAlignment = Enum.TextXAlignment.Left
 
--- Список игр
 local ScrollingList = Instance.new("ScrollingFrame", Window)
 ScrollingList.Size = UDim2.new(1, -30, 1, -120)
 ScrollingList.Position = UDim2.new(0, 15, 0, 115)
@@ -143,8 +239,25 @@ for _, gameData in ipairs(SupportedGames) do
     LaunchBtn.TextSize = 13
 
     LaunchBtn.MouseButton1Click:Connect(function()
-        if gameData.PlaceId == currentPlaceId then
+        if gameData.PlaceId ~= currentPlaceId then return end
+
+        -- мини loading при запуске скрипта
+        LoadOverlay.Visible = true
+        LoadOverlay.BackgroundTransparency = 0.2
+        LoadTitle.Text = "⚡ PIXEL CLIENT"
+        LoadSub.Text = "Launching " .. gameData.Name .. "..."
+        BarFill.Size = UDim2.new(0, 0, 1, 0)
+        Window.Visible = false
+
+        task.spawn(function()
+            for i = 1, 20 do
+                local p = i / 20
+                BarFill.Size = UDim2.new(p, 0, 1, 0)
+                LoadPct.Text = math.floor(p * 100) .. "%"
+                task.wait(0.03)
+            end
             ScreenGui:Destroy()
+            cleanupBlur()
             print("[Pixel Hub] Запуск: " .. gameData.Name)
             local ok, err = pcall(function()
                 loadstring(game:HttpGet(gameData.ScriptUrl))()
@@ -152,6 +265,58 @@ for _, gameData in ipairs(SupportedGames) do
             if not ok then
                 warn("[Pixel Hub] Ошибка загрузки: " .. tostring(err))
             end
-        end
+        end)
     end)
 end
+
+-- Анимация стартовой загрузки
+task.spawn(function()
+    local steps = {
+        {0.15, "Initializing..."},
+        {0.35, "Detecting game..."},
+        {0.55, "Loading modules..."},
+        {0.78, "Preparing UI..."},
+        {1.00, "Done"},
+    }
+    local idx = 1
+    local t0 = tick()
+    local duration = 1.35
+    while tick() - t0 < duration do
+        local p = math.clamp((tick() - t0) / duration, 0, 1)
+        -- ease out
+        local ep = 1 - (1 - p) * (1 - p)
+        BarFill.Size = UDim2.new(ep, 0, 1, 0)
+        LoadPct.Text = math.floor(ep * 100) .. "%"
+        while idx <= #steps and ep >= steps[idx][1] do
+            LoadSub.Text = steps[idx][2]
+            idx = idx + 1
+        end
+        task.wait()
+    end
+    BarFill.Size = UDim2.new(1, 0, 1, 0)
+    LoadPct.Text = "100%"
+    LoadSub.Text = "Welcome"
+    task.wait(0.2)
+
+    -- fade out loading, show window
+    TweenService:Create(LoadOverlay, TweenInfo.new(0.35), {BackgroundTransparency = 1}):Play()
+    for _, d in ipairs(LoadOverlay:GetDescendants()) do
+        if d:IsA("TextLabel") then
+            TweenService:Create(d, TweenInfo.new(0.3), {TextTransparency = 1}):Play()
+        elseif d:IsA("Frame") and d ~= LoadOverlay then
+            TweenService:Create(d, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+        end
+    end
+    task.wait(0.35)
+    LoadOverlay.Visible = false
+
+    Window.Visible = true
+    Window.Size = UDim2.new(0, 480, 0, 330)
+    Window.BackgroundTransparency = 0.3
+    TweenService:Create(Window, TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 520, 0, 360),
+        BackgroundTransparency = 0.05
+    }):Play()
+end)
+
+print("[Pixel Hub] Loaded")

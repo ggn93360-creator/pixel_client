@@ -22,7 +22,7 @@ local SupportedGames = {
     {
         Name = "Violence District",
         PlaceId = 93978595733734,
-        Description = "2D ESP, shaders, Auto Farm Man, god mode. Только через Hub.",
+        Description = "2D ESP, shaders, Auto Farm Man, god mod.",
         ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/games/ViolenceDistrict.lua",
         LocalFile = "PixelClient/games/ViolenceDistrict.lua"
     },

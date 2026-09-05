@@ -5,31 +5,31 @@ local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 
--- Поддерживаемые игры
+-- Поддерживаемые игры (можно указать несколько PlaceId для одного режима через табличку)
 local SupportedGames = {
     {
         Name = "The Strongest Battlegrounds (TSB)",
-        PlaceId = 10449761463,
+        PlaceIds = {10449761463},
         Description = "Основной режим: боевой клиент, ESP, прицеливание, музыка.",
         ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/1",
         LocalFile = "PixelClient/games/TSB.lua"
     },
     {
         Name = "War Tycoon",
-        PlaceId = 31490825,
+        PlaceIds = {31490825},
         Description = "Aim, No Recoil, Wallbang, ESP. Solara/Xeno не поддерживаются.",
         ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/2"
     },
     {
         Name = "Violence District",
-        PlaceId = 93978595733734,
+        PlaceIds = {93978595733734},
         Description = "2D ESP, shaders, Auto Farm Man, god mode.",
         ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/3",
         LocalFile = "PixelClient/games/ViolenceDistrict.lua"
     },
     {
         Name = "Gakuran",
-        PlaceId = 128736949265057,
+        PlaceIds = {128736949265057}, -- Сюда можно дописать ID матчей/подземелий через запятую
         Description = "Скрипты и визуальные модули для Gakuran.",
         ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/4",
         LocalFile = "PixelClient/games/Gakuran.lua"
@@ -42,6 +42,16 @@ pcall(function()
     local info = MarketplaceService:GetProductInfo(currentPlaceId)
     if info and info.Name then currentGameInfo = info.Name end
 end)
+
+-- Функция проверки, находится ли игрок в нужном режиме
+local function isCurrentGame(gameData)
+    for _, id in ipairs(gameData.PlaceIds) do
+        if id == currentPlaceId then
+            return true
+        end
+    end
+    return false
+end
 
 -- ===== AUTH CODE (клиент сверяет) =====
 local function makeAuthCode()
@@ -68,21 +78,20 @@ local function pushAuth()
     return code
 end
 
--- выставляем сразу при открытии Hub
 local sessionCode = pushAuth()
 
 local function loadGameScript(gameData)
-    if gameData.PlaceId ~= game.PlaceId then
-        warn("[Pixel Hub] BLOCKED: script", gameData.Name, "only for PlaceId", gameData.PlaceId, "current", game.PlaceId)
+    if not isCurrentGame(gameData) then
+        warn("[Pixel Hub] BLOCKED: script", gameData.Name, "not for current PlaceId", currentPlaceId)
         return false
     end
     local code = pushAuth()
     pcall(function()
         local g = (getgenv and getgenv()) or _G
-        g.PixelClient_Place = gameData.PlaceId
+        g.PixelClient_Place = currentPlaceId
         g.PixelClient_GameName = gameData.Name
     end)
-    print("[Pixel Hub] Auth:", code, "| Place:", gameData.PlaceId)
+    print("[Pixel Hub] Auth:", code, "| Place:", currentPlaceId)
 
     local function run(src, label)
         local ok, err = pcall(function()
@@ -98,7 +107,6 @@ local function loadGameScript(gameData)
         return false
     end
 
-    -- локальный файл (если есть)
     if gameData.LocalFile and readfile and isfile then
         local okFile = false
         pcall(function() okFile = isfile(gameData.LocalFile) end)
@@ -110,7 +118,6 @@ local function loadGameScript(gameData)
         end
     end
 
-    -- URL
     if gameData.ScriptUrl and game.HttpGet then
         local ok, body = pcall(function()
             return game:HttpGet(gameData.ScriptUrl)
@@ -319,7 +326,8 @@ for _, gameData in ipairs(SupportedGames) do
     LaunchBtn.Position = UDim2.new(1, -105, 0.5, -16)
     Instance.new("UICorner", LaunchBtn).CornerRadius = UDim.new(0, 8)
 
-    if gameData.PlaceId == currentPlaceId then
+    local inThisGame = isCurrentGame(gameData)
+    if inThisGame then
         LaunchBtn.Text = "Запустить"
         LaunchBtn.BackgroundColor3 = Color3.fromRGB(80, 180, 90)
     else
@@ -331,7 +339,7 @@ for _, gameData in ipairs(SupportedGames) do
     LaunchBtn.TextSize = 13
 
     LaunchBtn.MouseButton1Click:Connect(function()
-        if gameData.PlaceId ~= currentPlaceId then return end
+        if not isCurrentGame(gameData) then return end
 
         LoadOverlay.Visible = true
         LoadOverlay.BackgroundTransparency = 0.2
@@ -385,7 +393,7 @@ task.spawn(function()
     local duration = 1.35
     while tick() - t0 < duration do
         local p = math.clamp((tick() - t0) / duration, 0, 1)
-        let ep = 1 - (1 - p) * (1 - p)
+        local ep = 1 - (1 - p) * (1 - p)
         BarFill.Size = UDim2.new(ep, 0, 1, 0)
         LoadPct.Text = math.floor(ep * 100) .. "%"
         while idx <= #steps and ep >= steps[idx][1] do

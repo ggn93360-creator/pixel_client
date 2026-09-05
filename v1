@@ -27,6 +27,13 @@ local SupportedGames = {
         ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/3",
         LocalFile = "PixelClient/games/ViolenceDistrict.lua"
     },
+    {
+        Name = "Gakuran",
+        PlaceId = 14814392272, -- Замени на реальный PlaceId игры Gakuran при необходимости
+        Description = "Скрипты и визуальные модули для Gakuran.",
+        ScriptUrl = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/hub/4",
+        LocalFile = "PixelClient/games/Gakuran.lua"
+    },
 }
 
 local currentPlaceId = game.PlaceId

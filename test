@@ -2,8 +2,8 @@
 	Pixels Client — кто сейчас играет с таким же скриптом
 	API: https://mjuchl2kvk.apps.bot-hosting.cloud/api.php
 
-	Положи в LocalScript (StarterPlayerScripts) или в Script на сервере.
-	Показывает список онлайн в консоль (Output) и опционально в GUI.
+	Работает сам: пробует HttpService, syn.request, http.request, request и т.д.
+	Не требует вручную включать Allow HTTP Requests.
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -11,33 +11,146 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
-local REFRESH_SEC = 2
-local SHOW_GUI = true -- false = только в Output
+local REFRESH_SEC = 10
+local SHOW_GUI = true
 
--- ========== HTTP ==========
+-- ========== HTTP (авто-выбор) ==========
 
-local function request(method: string, action: string, body: any?): any?
-	local url = API_URL .. "?action=" .. action
-	local ok, result = pcall(function()
+local httpBackend = nil -- "httpservice" | "syn" | "http" | "request" | "fluxus" | "httpget"
+
+local function tryDecode(raw)
+	if type(raw) ~= "string" or raw == "" then
+		return nil
+	end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(raw)
+	end)
+	if ok then
+		return data
+	end
+	return nil
+end
+
+local function detectBackend()
+	-- 1) syn.request (Synapse, многие форки)
+	if syn and type(syn.request) == "function" then
+		httpBackend = "syn"
+		return
+	end
+	-- 2) http.request
+	if http and type(http.request) == "function" then
+		httpBackend = "http"
+		return
+	end
+	-- 3) request (глобальная)
+	if type(request) == "function" then
+		httpBackend = "request"
+		return
+	end
+	-- 4) fluxus
+	if fluxus and type(fluxus.request) == "function" then
+		httpBackend = "fluxus"
+		return
+	end
+	-- 5) HttpService (обычная игра / Studio с HTTP)
+	local ok = pcall(function()
+		if HttpService.HttpEnabled then
+			HttpService:GetAsync(API_URL .. "?action=list")
+		else
+			-- иногда HttpEnabled false, но GetAsync всё равно работает в executor
+			HttpService:GetAsync(API_URL .. "?action=list")
+		end
+	end)
+	if ok then
+		httpBackend = "httpservice"
+		return
+	end
+	-- 6) game:HttpGet (старый/executor стиль)
+	if type(game.HttpGet) == "function" then
+		local ok2 = pcall(function()
+			return game:HttpGet(API_URL .. "?action=list")
+		end)
+		if ok2 then
+			httpBackend = "httpget"
+			return
+		end
+	end
+	httpBackend = nil
+end
+
+local function rawRequest(method, url, body)
+	method = string.upper(method or "GET")
+	local headers = { ["Content-Type"] = "application/json" }
+
+	if httpBackend == "syn" then
+		local res = syn.request({
+			Url = url,
+			Method = method,
+			Headers = headers,
+			Body = body,
+		})
+		return res and res.Body
+	elseif httpBackend == "http" then
+		local res = http.request({
+			Url = url,
+			Method = method,
+			Headers = headers,
+			Body = body,
+		})
+		return res and res.Body
+	elseif httpBackend == "request" then
+		local res = request({
+			Url = url,
+			Method = method,
+			Headers = headers,
+			Body = body,
+		})
+		return res and res.Body
+	elseif httpBackend == "fluxus" then
+		local res = fluxus.request({
+			Url = url,
+			Method = method,
+			Headers = headers,
+			Body = body,
+		})
+		return res and res.Body
+	elseif httpBackend == "httpservice" then
 		if method == "GET" then
 			return HttpService:GetAsync(url)
 		else
-			local payload = body and HttpService:JSONEncode(body) or "{}"
-			return HttpService:PostAsync(url, payload, Enum.HttpContentType.ApplicationJson)
+			return HttpService:PostAsync(url, body or "{}", Enum.HttpContentType.ApplicationJson)
 		end
+	elseif httpBackend == "httpget" then
+		if method == "GET" then
+			return game:HttpGet(url)
+		end
+		-- POST через HttpGet недоступен — пробуем HttpPost если есть
+		if type(game.HttpPost) == "function" then
+			return game:HttpPost(url, body or "{}", "application/json")
+		end
+		return nil
+	end
+	return nil
+end
+
+local function request(method, action, body)
+	local url = API_URL .. "?action=" .. action
+	local payload = nil
+	if body then
+		local ok, encoded = pcall(function()
+			return HttpService:JSONEncode(body)
+		end)
+		payload = ok and encoded or nil
+	end
+
+	local ok, result = pcall(function()
+		return rawRequest(method, url, payload)
 	end)
-	if not ok then
+	if not ok or not result then
 		warn("[PixelsOnline] HTTP error:", result)
 		return nil
 	end
-	local decodeOk, data = pcall(function()
-		return HttpService:JSONDecode(result)
-	end)
-	if not decodeOk then
-		warn("[PixelsOnline] JSON error:", data)
-		return nil
-	end
-	return data
+	return tryDecode(result)
 end
 
 local function fetchList()
@@ -48,9 +161,9 @@ local function fetchStats()
 	return request("GET", "stats")
 end
 
-local function sendHeartbeat(userid: string, username: string, displayname: string?, features: {string}?)
+local function sendHeartbeat(userid, username, displayname, features)
 	return request("POST", "heartbeat", {
-		userid = userid,
+		userid = tostring(userid),
 		username = username,
 		displayname = displayname or username,
 		game = "Roblox",
@@ -60,7 +173,7 @@ end
 
 -- ========== форматирование ==========
 
-local function ago(ts: number): string
+local function ago(ts)
 	if not ts or ts == 0 then
 		return "?"
 	end
@@ -79,7 +192,7 @@ local function ago(ts: number): string
 	end
 end
 
-local function printPlayers(data: any, stats: any?)
+local function printPlayers(data, stats)
 	local users = (data and data.users) or {}
 	local count = (data and data.count) or #users
 
@@ -148,23 +261,26 @@ local function printPlayers(data: any, stats: any?)
 	print("  Всего в списке: " .. tostring(count))
 end
 
--- ========== простой GUI (опционально) ==========
+-- ========== GUI ==========
 
-local screenGui: ScreenGui? = nil
-local listLabel: TextLabel? = nil
+local screenGui = nil
+local listLabel = nil
 
 local function ensureGui()
 	if not SHOW_GUI then
 		return
 	end
 	if RunService:IsServer() then
-		return -- GUI только на клиенте
+		return
 	end
 	local player = Players.LocalPlayer
 	if not player then
 		return
 	end
-	local pg = player:WaitForChild("PlayerGui")
+	local pg = player:FindFirstChild("PlayerGui") or player:WaitForChild("PlayerGui", 5)
+	if not pg then
+		return
+	end
 
 	if screenGui and screenGui.Parent then
 		return
@@ -232,7 +348,7 @@ local function ensureGui()
 	listLabel.Parent = scroll
 end
 
-local function updateGui(data: any)
+local function updateGui(data)
 	if not listLabel then
 		return
 	end
@@ -264,9 +380,7 @@ local function heartbeatSelf()
 end
 
 local function tick()
-	-- сначала заявляем себя (чтобы оставаться online, TTL = 120 сек)
 	heartbeatSelf()
-
 	local data = fetchList()
 	if not data then
 		return
@@ -279,12 +393,14 @@ end
 -- ========== старт ==========
 
 task.spawn(function()
-	-- HttpService должен быть включён в Game Settings → Security → Allow HTTP Requests
-	if not HttpService.HttpEnabled then
-		warn("[PixelsOnline] Включи Allow HTTP Requests в настройках игры!")
+	detectBackend()
+
+	if not httpBackend then
+		warn("[PixelsOnline] Не удалось найти рабочий HTTP. Попробуй executor с syn.request / http.request.")
 		return
 	end
 
+	print("[PixelsOnline] HTTP backend:", httpBackend)
 	ensureGui()
 
 	while true do
@@ -296,4 +412,4 @@ task.spawn(function()
 	end
 end)
 
-print("[PixelsOnline] запущен. Список обновляется каждые " .. REFRESH_SEC .. " сек. Heartbeat включён.")
+print("[PixelsOnline] запущен. Список каждые " .. REFRESH_SEC .. " сек. Heartbeat вкл.")

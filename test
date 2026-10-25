@@ -12,7 +12,7 @@ local RunService = game:GetService("RunService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
 local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
-local REFRESH_SEC = 10
+local REFRESH_SEC = 2
 local SHOW_GUI = true
 
 -- кэш названия текущей игры

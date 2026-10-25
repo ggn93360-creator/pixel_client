@@ -2,26 +2,76 @@
 	Pixels Client — кто сейчас играет с таким же скриптом
 	API: https://mjuchl2kvk.apps.bot-hosting.cloud/api.php
 
-	Работает сам: пробует HttpService, syn.request, http.request, request и т.д.
-	Не требует вручную включать Allow HTTP Requests.
+	Без GUI — только Output.
+	Шлёт и показывает устройство (PC / Mobile) + executor + игру.
 ]]
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
 local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
-local REFRESH_SEC = 2
-local SHOW_GUI = true
+local REFRESH_SEC = 10
 
--- кэш названия текущей игры
-local cachedGameName = nil
-
-local function getCurrentGameName()
-	if cachedGameName then
-		return cachedGameName
+local function detectExecutor()
+	local name = nil
+	pcall(function()
+		if identifyexecutor then
+			name = identifyexecutor()
+		elseif getexecutorname then
+			name = getexecutorname()
+		end
+	end)
+	if type(name) == "string" and #name > 0 then
+		return name
 	end
+	if syn then return "Synapse" end
+	if fluxus then return "Fluxus" end
+	if KRNL_LOADED or krnl then return "Krnl" end
+	if getgenv and getgenv().Arceus then return "Arceus X" end
+	if getgenv and (getgenv().Codex or getgenv().CODEX) then return "Codex" end
+	if getgenv and getgenv().Hydrogen then return "Hydrogen" end
+	if getgenv and getgenv().Delta then return "Delta" end
+	if getgenv and getgenv().Solara then return "Solara" end
+	if getgenv and getgenv().Wave then return "Wave" end
+	return "Unknown"
+end
+
+local function detectDevice()
+	local exec = detectExecutor()
+	local execLower = string.lower(tostring(exec))
+	local mobileKw = {
+		"arceus", "codex", "hydrogen", "delta", "trigon", "fluxus android",
+		"krnl ios", "ios", "android", "mobile", "evon", "codex mobile"
+	}
+	local isMobileExec = false
+	for _, kw in ipairs(mobileKw) do
+		if string.find(execLower, kw, 1, true) then
+			isMobileExec = true
+			break
+		end
+	end
+	local touch, keyboard, gyro = false, false, false
+	pcall(function() touch = UserInputService.TouchEnabled end)
+	pcall(function() keyboard = UserInputService.KeyboardEnabled end)
+	pcall(function() gyro = UserInputService.GyroscopeEnabled end)
+	local small = false
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam and cam.ViewportSize.X > 0 and cam.ViewportSize.X < 900 then
+			small = true
+		end
+	end)
+	local isMobile = isMobileExec or (touch and (not keyboard or gyro or small))
+	return isMobile and "Mobile" or "PC", exec
+end
+
+local DEVICE, EXECUTOR = detectDevice()
+
+local cachedGameName = nil
+local function getCurrentGameName()
+	if cachedGameName then return cachedGameName end
 	local placeId = game.PlaceId
 	local name = nil
 	local ok, info = pcall(function()
@@ -40,66 +90,28 @@ local function getCurrentGameName()
 	return cachedGameName
 end
 
--- ========== HTTP (авто-выбор) ==========
-
-local httpBackend = nil -- "httpservice" | "syn" | "http" | "request" | "fluxus" | "httpget"
+local httpBackend = nil
 
 local function tryDecode(raw)
-	if type(raw) ~= "string" or raw == "" then
-		return nil
-	end
+	if type(raw) ~= "string" or raw == "" then return nil end
 	local ok, data = pcall(function()
 		return HttpService:JSONDecode(raw)
 	end)
-	if ok then
-		return data
-	end
-	return nil
+	return ok and data or nil
 end
 
 local function detectBackend()
-	-- 1) syn.request (Synapse, многие форки)
-	if syn and type(syn.request) == "function" then
-		httpBackend = "syn"
-		return
-	end
-	-- 2) http.request
-	if http and type(http.request) == "function" then
-		httpBackend = "http"
-		return
-	end
-	-- 3) request (глобальная)
-	if type(request) == "function" then
-		httpBackend = "request"
-		return
-	end
-	-- 4) fluxus
-	if fluxus and type(fluxus.request) == "function" then
-		httpBackend = "fluxus"
-		return
-	end
-	-- 5) HttpService (обычная игра / Studio с HTTP)
+	if syn and type(syn.request) == "function" then httpBackend = "syn" return end
+	if http and type(http.request) == "function" then httpBackend = "http" return end
+	if type(request) == "function" then httpBackend = "request" return end
+	if fluxus and type(fluxus.request) == "function" then httpBackend = "fluxus" return end
 	local ok = pcall(function()
-		if HttpService.HttpEnabled then
-			HttpService:GetAsync(API_URL .. "?action=list")
-		else
-			-- иногда HttpEnabled false, но GetAsync всё равно работает в executor
-			HttpService:GetAsync(API_URL .. "?action=list")
-		end
+		HttpService:GetAsync(API_URL .. "?action=list")
 	end)
-	if ok then
-		httpBackend = "httpservice"
-		return
-	end
-	-- 6) game:HttpGet (старый/executor стиль)
+	if ok then httpBackend = "httpservice" return end
 	if type(game.HttpGet) == "function" then
-		local ok2 = pcall(function()
-			return game:HttpGet(API_URL .. "?action=list")
-		end)
-		if ok2 then
-			httpBackend = "httpget"
-			return
-		end
+		local ok2 = pcall(function() return game:HttpGet(API_URL .. "?action=list") end)
+		if ok2 then httpBackend = "httpget" return end
 	end
 	httpBackend = nil
 end
@@ -107,54 +119,26 @@ end
 local function rawRequest(method, url, body)
 	method = string.upper(method or "GET")
 	local headers = { ["Content-Type"] = "application/json" }
-
 	if httpBackend == "syn" then
-		local res = syn.request({
-			Url = url,
-			Method = method,
-			Headers = headers,
-			Body = body,
-		})
+		local res = syn.request({ Url = url, Method = method, Headers = headers, Body = body })
 		return res and res.Body
 	elseif httpBackend == "http" then
-		local res = http.request({
-			Url = url,
-			Method = method,
-			Headers = headers,
-			Body = body,
-		})
+		local res = http.request({ Url = url, Method = method, Headers = headers, Body = body })
 		return res and res.Body
 	elseif httpBackend == "request" then
-		local res = request({
-			Url = url,
-			Method = method,
-			Headers = headers,
-			Body = body,
-		})
+		local res = request({ Url = url, Method = method, Headers = headers, Body = body })
 		return res and res.Body
 	elseif httpBackend == "fluxus" then
-		local res = fluxus.request({
-			Url = url,
-			Method = method,
-			Headers = headers,
-			Body = body,
-		})
+		local res = fluxus.request({ Url = url, Method = method, Headers = headers, Body = body })
 		return res and res.Body
 	elseif httpBackend == "httpservice" then
-		if method == "GET" then
-			return HttpService:GetAsync(url)
-		else
-			return HttpService:PostAsync(url, body or "{}", Enum.HttpContentType.ApplicationJson)
-		end
+		if method == "GET" then return HttpService:GetAsync(url) end
+		return HttpService:PostAsync(url, body or "{}", Enum.HttpContentType.ApplicationJson)
 	elseif httpBackend == "httpget" then
-		if method == "GET" then
-			return game:HttpGet(url)
-		end
-		-- POST через HttpGet недоступен — пробуем HttpPost если есть
+		if method == "GET" then return game:HttpGet(url) end
 		if type(game.HttpPost) == "function" then
 			return game:HttpPost(url, body or "{}", "application/json")
 		end
-		return nil
 	end
 	return nil
 end
@@ -163,15 +147,10 @@ local function request(method, action, body)
 	local url = API_URL .. "?action=" .. action
 	local payload = nil
 	if body then
-		local ok, encoded = pcall(function()
-			return HttpService:JSONEncode(body)
-		end)
+		local ok, encoded = pcall(function() return HttpService:JSONEncode(body) end)
 		payload = ok and encoded or nil
 	end
-
-	local ok, result = pcall(function()
-		return rawRequest(method, url, payload)
-	end)
+	local ok, result = pcall(function() return rawRequest(method, url, payload) end)
 	if not ok or not result then
 		warn("[PixelsOnline] HTTP error:", result)
 		return nil
@@ -179,13 +158,8 @@ local function request(method, action, body)
 	return tryDecode(result)
 end
 
-local function fetchList()
-	return request("GET", "list")
-end
-
-local function fetchStats()
-	return request("GET", "stats")
-end
+local function fetchList() return request("GET", "list") end
+local function fetchStats() return request("GET", "stats") end
 
 local function sendHeartbeat(userid, username, displayname, features)
 	return request("POST", "heartbeat", {
@@ -193,254 +167,113 @@ local function sendHeartbeat(userid, username, displayname, features)
 		username = username,
 		displayname = displayname or username,
 		game = getCurrentGameName(),
-		placeId = tostring(game.PlaceId),
-		features = features or {},
+		device = DEVICE,
+		executor = EXECUTOR,
+		features = features or { DEVICE, EXECUTOR, "pixels_online" },
 	})
 end
 
--- ========== форматирование ==========
-
 local function ago(ts)
-	if not ts or ts == 0 then
-		return "?"
-	end
-	if ts > 10000000000 then
-		ts = math.floor(ts / 1000)
-	end
+	if not ts or ts == 0 then return "?" end
+	if ts > 10000000000 then ts = math.floor(ts / 1000) end
 	local diff = math.max(0, os.time() - ts)
-	if diff < 60 then
-		return diff .. " с назад"
-	elseif diff < 3600 then
-		return math.floor(diff / 60) .. " мин назад"
-	elseif diff < 86400 then
-		return math.floor(diff / 3600) .. " ч назад"
-	else
-		return math.floor(diff / 86400) .. " дн назад"
+	if diff < 60 then return diff .. " с назад"
+	elseif diff < 3600 then return math.floor(diff / 60) .. " мин назад"
+	elseif diff < 86400 then return math.floor(diff / 3600) .. " ч назад"
+	else return math.floor(diff / 86400) .. " дн назад" end
+end
+
+local function deviceOf(u)
+	if type(u.device) == "string" and u.device ~= "" then return u.device end
+	if type(u.features) == "table" then
+		for _, f in ipairs(u.features) do
+			local s = string.lower(tostring(f))
+			if s == "pc" then return "PC" end
+			if s == "mobile" or s == "phone" or s == "android" or s == "ios" then return "Mobile" end
+		end
 	end
+	return "?"
+end
+
+local function execOf(u)
+	if type(u.executor) == "string" and u.executor ~= "" then return u.executor end
+	if type(u.features) == "table" then
+		for _, f in ipairs(u.features) do
+			local s = tostring(f)
+			local sl = string.lower(s)
+			if sl ~= "pc" and sl ~= "mobile" and sl ~= "phone" and sl ~= "android" and sl ~= "ios"
+				and sl ~= "pixels_online" and sl ~= "pixelclient" then
+				return s
+			end
+		end
+	end
+	return "—"
 end
 
 local function printPlayers(data, stats)
 	local users = (data and data.users) or {}
 	local count = (data and data.count) or #users
-
 	print("============================================================")
-	print("  PIXELS CLIENT — кто онлайн")
+	print("  PIXELS — кто онлайн   |  ты: " .. DEVICE .. " / " .. EXECUTOR)
 	print("============================================================")
-
 	if stats and stats.stats then
 		local s = stats.stats
-		print(string.format(
-			"  Всего: %s  |  Онлайн: %s  |  Hits: %s",
-			tostring(s.total or "?"),
-			tostring(s.onlineNow or s.online or count),
-			tostring(s.totalHits or "?")
-		))
-		local top = s.topFeatures
-		if type(top) == "table" and #top > 0 then
-			local parts = {}
-			for i = 1, math.min(8, #top) do
-				table.insert(parts, string.format("%s(%s)", tostring(top[i].name), tostring(top[i].count)))
-			end
-			print("  Топ модули: " .. table.concat(parts, ", "))
-		end
+		print(string.format("  Всего: %s  |  Онлайн: %s  |  Hits: %s",
+			tostring(s.total or "?"), tostring(s.onlineNow or s.online or count), tostring(s.totalHits or "?")))
 	else
 		print("  Онлайн сейчас: " .. tostring(count))
 	end
-
 	print("------------------------------------------------------------")
-
 	if #users == 0 then
 		print("  Никого нет в сети.")
 		print("------------------------------------------------------------")
 		return
 	end
-
-	print(string.format("  %-3s %-18s %-12s %-22s %-12s %s", "#", "Ник", "UserId", "Играет в", "Был", "Модули"))
+	print(string.format("  %-3s %-16s %-10s %-8s %-12s %-18s %s", "#", "Ник", "UserId", "Device", "Executor", "Игра", "Был"))
 	print("------------------------------------------------------------")
-
 	for i, u in ipairs(users) do
 		local name = u.displayname or u.username or "?"
-		local username = u.username or ""
+		if #name > 15 then name = string.sub(name, 1, 14) .. "…" end
 		local uid = tostring(u.userid or "")
-		local gameName = u.game or "—"
-		if #gameName > 20 then
-			gameName = string.sub(gameName, 1, 17) .. "..."
-		end
+		if #uid > 10 then uid = string.sub(uid, 1, 9) .. "…" end
+		local dev = deviceOf(u)
+		local ex = execOf(u)
+		if #ex > 11 then ex = string.sub(ex, 1, 10) .. "…" end
+		local gameName = tostring(u.game or "—")
+		if #gameName > 17 then gameName = string.sub(gameName, 1, 16) .. "…" end
 		local last = ago(tonumber(u.lastSeen) or 0)
-		local feats = "—"
-		if type(u.features) == "table" and #u.features > 0 then
-			feats = table.concat(u.features, ", ")
-		end
 		local mark = (u.online ~= false) and "●" or "○"
-
-		local display = name
-		if username ~= "" and username ~= name then
-			display = name .. " (@" .. username .. ")"
-		end
-		if #display > 17 then
-			display = string.sub(display, 1, 16) .. "…"
-		end
-
-		print(string.format(
-			"  %s %-2d %-18s %-12s %-22s %-12s %s",
-			mark, i, display, uid, gameName, last, feats
-		))
+		print(string.format("  %s %-2d %-16s %-10s %-8s %-12s %-18s %s", mark, i, name, uid, dev, ex, gameName, last))
 	end
-
 	print("------------------------------------------------------------")
-	print("  Всего в списке: " .. tostring(count))
+	print("  Всего: " .. tostring(count))
 end
-
--- ========== GUI ==========
-
-local screenGui = nil
-local listLabel = nil
-
-local function ensureGui()
-	if not SHOW_GUI then
-		return
-	end
-	if RunService:IsServer() then
-		return
-	end
-	local player = Players.LocalPlayer
-	if not player then
-		return
-	end
-	local pg = player:FindFirstChild("PlayerGui") or player:WaitForChild("PlayerGui", 5)
-	if not pg then
-		return
-	end
-
-	if screenGui and screenGui.Parent then
-		return
-	end
-
-	screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "PixelsOnlineGui"
-	screenGui.ResetOnSpawn = false
-	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screenGui.Parent = pg
-
-	local frame = Instance.new("Frame")
-	frame.Name = "Root"
-	frame.Size = UDim2.fromOffset(320, 220)
-	frame.Position = UDim2.new(1, -340, 0, 20)
-	frame.BackgroundColor3 = Color3.fromRGB(28, 22, 26)
-	frame.BackgroundTransparency = 0.15
-	frame.BorderSizePixel = 0
-	frame.Parent = screenGui
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 10)
-	corner.Parent = frame
-
-	local title = Instance.new("TextLabel")
-	title.Name = "Title"
-	title.Size = UDim2.new(1, -16, 0, 28)
-	title.Position = UDim2.fromOffset(8, 6)
-	title.BackgroundTransparency = 1
-	title.Font = Enum.Font.GothamBold
-	title.TextSize = 14
-	title.TextColor3 = Color3.fromRGB(232, 138, 160)
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Text = "PIXELS — кто онлайн"
-	title.Parent = frame
-
-	local scroll = Instance.new("ScrollingFrame")
-	scroll.Name = "List"
-	scroll.Size = UDim2.new(1, -16, 1, -44)
-	scroll.Position = UDim2.fromOffset(8, 36)
-	scroll.BackgroundTransparency = 1
-	scroll.BorderSizePixel = 0
-	scroll.ScrollBarThickness = 4
-	scroll.CanvasSize = UDim2.fromOffset(0, 0)
-	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	scroll.Parent = frame
-
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0, 4)
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = scroll
-
-	listLabel = Instance.new("TextLabel")
-	listLabel.Name = "Content"
-	listLabel.Size = UDim2.new(1, 0, 0, 0)
-	listLabel.AutomaticSize = Enum.AutomaticSize.Y
-	listLabel.BackgroundTransparency = 1
-	listLabel.Font = Enum.Font.Code
-	listLabel.TextSize = 12
-	listLabel.TextColor3 = Color3.fromRGB(240, 230, 232)
-	listLabel.TextXAlignment = Enum.TextXAlignment.Left
-	listLabel.TextYAlignment = Enum.TextYAlignment.Top
-	listLabel.TextWrapped = true
-	listLabel.Text = "Загрузка..."
-	listLabel.Parent = scroll
-end
-
-local function updateGui(data)
-	if not listLabel then
-		return
-	end
-	local users = (data and data.users) or {}
-	if #users == 0 then
-		listLabel.Text = "Никого нет в сети."
-		return
-	end
-	local lines = {}
-	for i, u in ipairs(users) do
-		local name = u.displayname or u.username or "?"
-		local gameName = u.game or "—"
-		local feats = ""
-		if type(u.features) == "table" and #u.features > 0 then
-			feats = " [" .. table.concat(u.features, ", ") .. "]"
-		end
-		table.insert(lines, string.format("%d. %s\n   → %s%s", i, name, gameName, feats))
-	end
-	listLabel.Text = table.concat(lines, "\n")
-end
-
--- ========== цикл ==========
 
 local function heartbeatSelf()
 	local lp = Players.LocalPlayer
-	if not lp then
-		return
-	end
-	sendHeartbeat(tostring(lp.UserId), lp.Name, lp.DisplayName, { "pixels_online" })
+	if not lp then return end
+	sendHeartbeat(tostring(lp.UserId), lp.Name, lp.DisplayName, { DEVICE, EXECUTOR, "pixels_online" })
 end
 
 local function tick()
 	heartbeatSelf()
 	local data = fetchList()
-	if not data then
-		return
-	end
-	local stats = fetchStats()
-	printPlayers(data, stats)
-	updateGui(data)
+	if not data then return end
+	printPlayers(data, fetchStats())
 end
-
--- ========== старт ==========
 
 task.spawn(function()
 	detectBackend()
-
 	if not httpBackend then
-		warn("[PixelsOnline] Не удалось найти рабочий HTTP. Попробуй executor с syn.request / http.request.")
+		warn("[PixelsOnline] Нет рабочего HTTP (syn/request/HttpService).")
 		return
 	end
-
-	print("[PixelsOnline] HTTP backend:", httpBackend)
-	ensureGui()
-
+	print("[PixelsOnline] backend:", httpBackend, "| device:", DEVICE, "| exec:", EXECUTOR)
 	while true do
 		local ok, err = pcall(tick)
-		if not ok then
-			warn("[PixelsOnline]", err)
-		end
+		if not ok then warn("[PixelsOnline]", err) end
 		task.wait(REFRESH_SEC)
 	end
 end)
 
-print("[PixelsOnline] запущен. Список каждые " .. REFRESH_SEC .. " сек. Heartbeat вкл.")
+print("[PixelsOnline] запущен. GUI нет. Device=" .. DEVICE)

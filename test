@@ -1,0 +1,299 @@
+--[[
+	Pixels Client — кто сейчас играет с таким же скриптом
+	API: https://mjuchl2kvk.apps.bot-hosting.cloud/api.php
+
+	Положи в LocalScript (StarterPlayerScripts) или в Script на сервере.
+	Показывает список онлайн в консоль (Output) и опционально в GUI.
+]]
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
+local REFRESH_SEC = 2
+local SHOW_GUI = true -- false = только в Output
+
+-- ========== HTTP ==========
+
+local function request(method: string, action: string, body: any?): any?
+	local url = API_URL .. "?action=" .. action
+	local ok, result = pcall(function()
+		if method == "GET" then
+			return HttpService:GetAsync(url)
+		else
+			local payload = body and HttpService:JSONEncode(body) or "{}"
+			return HttpService:PostAsync(url, payload, Enum.HttpContentType.ApplicationJson)
+		end
+	end)
+	if not ok then
+		warn("[PixelsOnline] HTTP error:", result)
+		return nil
+	end
+	local decodeOk, data = pcall(function()
+		return HttpService:JSONDecode(result)
+	end)
+	if not decodeOk then
+		warn("[PixelsOnline] JSON error:", data)
+		return nil
+	end
+	return data
+end
+
+local function fetchList()
+	return request("GET", "list")
+end
+
+local function fetchStats()
+	return request("GET", "stats")
+end
+
+local function sendHeartbeat(userid: string, username: string, displayname: string?, features: {string}?)
+	return request("POST", "heartbeat", {
+		userid = userid,
+		username = username,
+		displayname = displayname or username,
+		game = "Roblox",
+		features = features or {},
+	})
+end
+
+-- ========== форматирование ==========
+
+local function ago(ts: number): string
+	if not ts or ts == 0 then
+		return "?"
+	end
+	if ts > 10000000000 then
+		ts = math.floor(ts / 1000)
+	end
+	local diff = math.max(0, os.time() - ts)
+	if diff < 60 then
+		return diff .. " с назад"
+	elseif diff < 3600 then
+		return math.floor(diff / 60) .. " мин назад"
+	elseif diff < 86400 then
+		return math.floor(diff / 3600) .. " ч назад"
+	else
+		return math.floor(diff / 86400) .. " дн назад"
+	end
+end
+
+local function printPlayers(data: any, stats: any?)
+	local users = (data and data.users) or {}
+	local count = (data and data.count) or #users
+
+	print("============================================================")
+	print("  PIXELS CLIENT — кто онлайн")
+	print("============================================================")
+
+	if stats and stats.stats then
+		local s = stats.stats
+		print(string.format(
+			"  Всего: %s  |  Онлайн: %s  |  Hits: %s",
+			tostring(s.total or "?"),
+			tostring(s.onlineNow or s.online or count),
+			tostring(s.totalHits or "?")
+		))
+		local top = s.topFeatures
+		if type(top) == "table" and #top > 0 then
+			local parts = {}
+			for i = 1, math.min(8, #top) do
+				table.insert(parts, string.format("%s(%s)", tostring(top[i].name), tostring(top[i].count)))
+			end
+			print("  Топ модули: " .. table.concat(parts, ", "))
+		end
+	else
+		print("  Онлайн сейчас: " .. tostring(count))
+	end
+
+	print("------------------------------------------------------------")
+
+	if #users == 0 then
+		print("  Никого нет в сети.")
+		print("------------------------------------------------------------")
+		return
+	end
+
+	print(string.format("  %-3s %-20s %-14s %-12s %-14s %s", "#", "Ник", "UserId", "Игра", "Последний раз", "Модули"))
+	print("------------------------------------------------------------")
+
+	for i, u in ipairs(users) do
+		local name = u.displayname or u.username or "?"
+		local username = u.username or ""
+		local uid = tostring(u.userid or "")
+		local gameName = u.game or "—"
+		local last = ago(tonumber(u.lastSeen) or 0)
+		local feats = "—"
+		if type(u.features) == "table" and #u.features > 0 then
+			feats = table.concat(u.features, ", ")
+		end
+		local mark = (u.online ~= false) and "●" or "○"
+
+		local display = name
+		if username ~= "" and username ~= name then
+			display = name .. " (@" .. username .. ")"
+		end
+		if #display > 19 then
+			display = string.sub(display, 1, 18) .. "…"
+		end
+
+		print(string.format(
+			"  %s %-2d %-20s %-14s %-12s %-14s %s",
+			mark, i, display, uid, gameName, last, feats
+		))
+	end
+
+	print("------------------------------------------------------------")
+	print("  Всего в списке: " .. tostring(count))
+end
+
+-- ========== простой GUI (опционально) ==========
+
+local screenGui: ScreenGui? = nil
+local listLabel: TextLabel? = nil
+
+local function ensureGui()
+	if not SHOW_GUI then
+		return
+	end
+	if RunService:IsServer() then
+		return -- GUI только на клиенте
+	end
+	local player = Players.LocalPlayer
+	if not player then
+		return
+	end
+	local pg = player:WaitForChild("PlayerGui")
+
+	if screenGui and screenGui.Parent then
+		return
+	end
+
+	screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "PixelsOnlineGui"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Parent = pg
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Root"
+	frame.Size = UDim2.fromOffset(320, 220)
+	frame.Position = UDim2.new(1, -340, 0, 20)
+	frame.BackgroundColor3 = Color3.fromRGB(28, 22, 26)
+	frame.BackgroundTransparency = 0.15
+	frame.BorderSizePixel = 0
+	frame.Parent = screenGui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = frame
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Size = UDim2.new(1, -16, 0, 28)
+	title.Position = UDim2.fromOffset(8, 6)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 14
+	title.TextColor3 = Color3.fromRGB(232, 138, 160)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Text = "PIXELS — кто онлайн"
+	title.Parent = frame
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Name = "List"
+	scroll.Size = UDim2.new(1, -16, 1, -44)
+	scroll.Position = UDim2.fromOffset(8, 36)
+	scroll.BackgroundTransparency = 1
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 4
+	scroll.CanvasSize = UDim2.fromOffset(0, 0)
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.Parent = frame
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 4)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = scroll
+
+	listLabel = Instance.new("TextLabel")
+	listLabel.Name = "Content"
+	listLabel.Size = UDim2.new(1, 0, 0, 0)
+	listLabel.AutomaticSize = Enum.AutomaticSize.Y
+	listLabel.BackgroundTransparency = 1
+	listLabel.Font = Enum.Font.Code
+	listLabel.TextSize = 12
+	listLabel.TextColor3 = Color3.fromRGB(240, 230, 232)
+	listLabel.TextXAlignment = Enum.TextXAlignment.Left
+	listLabel.TextYAlignment = Enum.TextYAlignment.Top
+	listLabel.TextWrapped = true
+	listLabel.Text = "Загрузка..."
+	listLabel.Parent = scroll
+end
+
+local function updateGui(data: any)
+	if not listLabel then
+		return
+	end
+	local users = (data and data.users) or {}
+	if #users == 0 then
+		listLabel.Text = "Никого нет в сети."
+		return
+	end
+	local lines = {}
+	for i, u in ipairs(users) do
+		local name = u.displayname or u.username or "?"
+		local feats = ""
+		if type(u.features) == "table" and #u.features > 0 then
+			feats = " [" .. table.concat(u.features, ", ") .. "]"
+		end
+		table.insert(lines, string.format("%d. %s%s", i, name, feats))
+	end
+	listLabel.Text = table.concat(lines, "\n")
+end
+
+-- ========== цикл ==========
+
+local function heartbeatSelf()
+	local lp = Players.LocalPlayer
+	if not lp then
+		return
+	end
+	sendHeartbeat(tostring(lp.UserId), lp.Name, lp.DisplayName, { "pixels_online" })
+end
+
+local function tick()
+	-- сначала заявляем себя (чтобы оставаться online, TTL = 120 сек)
+	heartbeatSelf()
+
+	local data = fetchList()
+	if not data then
+		return
+	end
+	local stats = fetchStats()
+	printPlayers(data, stats)
+	updateGui(data)
+end
+
+-- ========== старт ==========
+
+task.spawn(function()
+	-- HttpService должен быть включён в Game Settings → Security → Allow HTTP Requests
+	if not HttpService.HttpEnabled then
+		warn("[PixelsOnline] Включи Allow HTTP Requests в настройках игры!")
+		return
+	end
+
+	ensureGui()
+
+	while true do
+		local ok, err = pcall(tick)
+		if not ok then
+			warn("[PixelsOnline]", err)
+		end
+		task.wait(REFRESH_SEC)
+	end
+end)
+
+print("[PixelsOnline] запущен. Список обновляется каждые " .. REFRESH_SEC .. " сек. Heartbeat включён.")

@@ -9,10 +9,36 @@
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
 local REFRESH_SEC = 10
 local SHOW_GUI = true
+
+-- кэш названия текущей игры
+local cachedGameName = nil
+
+local function getCurrentGameName()
+	if cachedGameName then
+		return cachedGameName
+	end
+	local placeId = game.PlaceId
+	local name = nil
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(placeId)
+	end)
+	if ok and type(info) == "table" and info.Name then
+		name = tostring(info.Name)
+	end
+	if not name or name == "" then
+		name = "Place " .. tostring(placeId)
+	end
+	if #name > 48 then
+		name = string.sub(name, 1, 45) .. "..."
+	end
+	cachedGameName = name
+	return cachedGameName
+end
 
 -- ========== HTTP (авто-выбор) ==========
 
@@ -166,7 +192,8 @@ local function sendHeartbeat(userid, username, displayname, features)
 		userid = tostring(userid),
 		username = username,
 		displayname = displayname or username,
-		game = "Roblox",
+		game = getCurrentGameName(),
+		placeId = tostring(game.PlaceId),
 		features = features or {},
 	})
 end
@@ -228,7 +255,7 @@ local function printPlayers(data, stats)
 		return
 	end
 
-	print(string.format("  %-3s %-20s %-14s %-12s %-14s %s", "#", "Ник", "UserId", "Игра", "Последний раз", "Модули"))
+	print(string.format("  %-3s %-18s %-12s %-22s %-12s %s", "#", "Ник", "UserId", "Играет в", "Был", "Модули"))
 	print("------------------------------------------------------------")
 
 	for i, u in ipairs(users) do
@@ -236,6 +263,9 @@ local function printPlayers(data, stats)
 		local username = u.username or ""
 		local uid = tostring(u.userid or "")
 		local gameName = u.game or "—"
+		if #gameName > 20 then
+			gameName = string.sub(gameName, 1, 17) .. "..."
+		end
 		local last = ago(tonumber(u.lastSeen) or 0)
 		local feats = "—"
 		if type(u.features) == "table" and #u.features > 0 then
@@ -247,12 +277,12 @@ local function printPlayers(data, stats)
 		if username ~= "" and username ~= name then
 			display = name .. " (@" .. username .. ")"
 		end
-		if #display > 19 then
-			display = string.sub(display, 1, 18) .. "…"
+		if #display > 17 then
+			display = string.sub(display, 1, 16) .. "…"
 		end
 
 		print(string.format(
-			"  %s %-2d %-20s %-14s %-12s %-14s %s",
+			"  %s %-2d %-18s %-12s %-22s %-12s %s",
 			mark, i, display, uid, gameName, last, feats
 		))
 	end
@@ -360,11 +390,12 @@ local function updateGui(data)
 	local lines = {}
 	for i, u in ipairs(users) do
 		local name = u.displayname or u.username or "?"
+		local gameName = u.game or "—"
 		local feats = ""
 		if type(u.features) == "table" and #u.features > 0 then
 			feats = " [" .. table.concat(u.features, ", ") .. "]"
 		end
-		table.insert(lines, string.format("%d. %s%s", i, name, feats))
+		table.insert(lines, string.format("%d. %s\n   → %s%s", i, name, gameName, feats))
 	end
 	listLabel.Text = table.concat(lines, "\n")
 end

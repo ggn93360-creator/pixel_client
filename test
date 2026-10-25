@@ -804,150 +804,6 @@ task.spawn(function()
     BroadcastPixelClient()
 end)
 
--- ========================================================
--- ONLINE API: кто играет с Pixel Client + устройство (PC/Mobile)
--- ========================================================
-local cachedPlaceName = nil
-local function getPlaceName()
-    if cachedPlaceName then return cachedPlaceName end
-    local name = nil
-    pcall(function()
-        local info = MarketplaceService:GetProductInfo(game.PlaceId)
-        if info and info.Name then name = tostring(info.Name) end
-    end)
-    if not name or name == "" then
-        name = "Place " .. tostring(game.PlaceId)
-    end
-    if #name > 48 then name = string.sub(name, 1, 45) .. "..." end
-    cachedPlaceName = name
-    return cachedPlaceName
-end
-
-local function apiExtractBody(res)
-    if res == nil then return nil end
-    if type(res) == "string" then
-        if #res > 0 then return res end
-        return nil
-    end
-    if type(res) == "table" then
-        local b = res.Body or res.body or res.Data or res.data or res.text
-        if type(b) == "string" and #b > 0 then return b end
-        -- некоторые executors кладут JSON сразу в таблицу
-        if res.status or res.users or res.userid then
-            local ok, enc = pcall(function() return HttpService:JSONEncode(res) end)
-            if ok then return enc end
-        end
-    end
-    return nil
-end
-
-local function apiHttp(method, action, bodyTable)
-    local url = API_URL .. "?action=" .. tostring(action)
-    local payload = nil
-    if bodyTable then
-        local ok, enc = pcall(function() return HttpService:JSONEncode(bodyTable) end)
-        if ok then payload = enc end
-    end
-    local headers = {
-        ["Content-Type"] = "application/json",
-        ["Accept"] = "application/json",
-    }
-    method = string.upper(tostring(method or "GET"))
-
-    local candidates = {}
-
-    -- executor request variants
-    if syn and type(syn.request) == "function" then
-        table.insert(candidates, function()
-            return syn.request({ Url = url, Method = method, Headers = headers, Body = payload })
-        end)
-    end
-    if http and type(http.request) == "function" then
-        table.insert(candidates, function()
-            return http.request({ Url = url, Method = method, Headers = headers, Body = payload })
-        end)
-    end
-    if type(request) == "function" then
-        table.insert(candidates, function()
-            return request({ Url = url, Method = method, Headers = headers, Body = payload })
-        end)
-    end
-    if type(http_request) == "function" then
-        table.insert(candidates, function()
-            return http_request({ Url = url, Method = method, Headers = headers, Body = payload })
-        end)
-    end
-    if fluxus and type(fluxus.request) == "function" then
-        table.insert(candidates, function()
-            return fluxus.request({ Url = url, Method = method, Headers = headers, Body = payload })
-        end)
-    end
-
-    -- HttpService
-    table.insert(candidates, function()
-        if method == "GET" then
-            return HttpService:GetAsync(url)
-        end
-        return HttpService:PostAsync(url, payload or "{}", Enum.HttpContentType.ApplicationJson)
-    end)
-
-    -- game:HttpGet / HttpPost
-    if method == "GET" and type(game.HttpGet) == "function" then
-        table.insert(candidates, function()
-            return game:HttpGet(url)
-        end)
-    end
-    if method == "POST" and type(game.HttpPost) == "function" then
-        table.insert(candidates, function()
-            return game:HttpPost(url, payload or "{}", "application/json")
-        end)
-    end
-
-    for _, fn in ipairs(candidates) do
-        local ok, res = pcall(fn)
-        if ok then
-            local body = apiExtractBody(res)
-            if body then
-                local ok2, decoded = pcall(function() return HttpService:JSONDecode(body) end)
-                if ok2 and type(decoded) == "table" then
-                    return decoded
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local function deviceLabelFromUser(user)
-    if type(user) ~= "table" then return "?" end
-    if type(user.device) == "string" and user.device ~= "" then return user.device end
-    if type(user.platform) == "string" and user.platform ~= "" then return user.platform end
-    if type(user.features) == "table" then
-        for _, f in ipairs(user.features) do
-            local s = string.lower(tostring(f))
-            if s == "pc" then return "PC" end
-            if s == "mobile" or s == "phone" or s == "android" or s == "ios" then return "Mobile" end
-        end
-    end
-    return "?"
-end
-
-local function executorFromUser(user)
-    if type(user) ~= "table" then return nil end
-    if type(user.executor) == "string" and user.executor ~= "" then return user.executor end
-    if type(user.features) == "table" then
-        for _, f in ipairs(user.features) do
-            local s = tostring(f)
-            local sl = string.lower(s)
-            if sl ~= "pc" and sl ~= "mobile" and sl ~= "phone" and sl ~= "android" and sl ~= "ios"
-                and sl ~= "pixels_online" and sl ~= "pixelclient" and sl ~= "pixel client" then
-                return s
-            end
-        end
-    end
-    return nil
-end
-
 local function clearAllOverheadTags()
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
@@ -960,59 +816,131 @@ local function clearAllOverheadTags()
     end
 end
 
+local function onlineDeviceOf(user)
+    if type(user) ~= "table" then return "?" end
+    if type(user.device) == "string" and user.device ~= "" then return user.device end
+    if type(user.features) == "table" then
+        for _, f in ipairs(user.features) do
+            local s = string.lower(tostring(f))
+            if s == "pc" then return "PC" end
+            if s == "mobile" or s == "phone" or s == "android" or s == "ios" then return "Mobile" end
+        end
+    end
+    return "?"
+end
+
+local function onlineExecOf(user)
+    if type(user) ~= "table" then return nil end
+    if type(user.executor) == "string" and user.executor ~= "" then return user.executor end
+    if type(user.features) == "table" then
+        for _, f in ipairs(user.features) do
+            local s = tostring(f)
+            local sl = string.lower(s)
+            if sl ~= "pc" and sl ~= "mobile" and sl ~= "phone" and sl ~= "android" and sl ~= "ios"
+                and sl ~= "pixelclient" and sl ~= "pixels_online" then
+                return s
+            end
+        end
+    end
+    return nil
+end
+
+local function onlineHttp(method, url, jsonBody)
+    local headers = { ["Content-Type"] = "application/json" }
+    method = string.upper(method or "GET")
+
+    local function bodyOf(res)
+        if type(res) == "string" and #res > 0 then return res end
+        if type(res) == "table" then
+            local b = res.Body or res.body or res.Data or res.data
+            if type(b) == "string" and #b > 0 then return b end
+        end
+        return nil
+    end
+
+    local tries = {}
+    if syn and type(syn.request) == "function" then
+        table.insert(tries, function()
+            return syn.request({ Url = url, Method = method, Headers = headers, Body = jsonBody })
+        end)
+    end
+    if type(request) == "function" then
+        table.insert(tries, function()
+            return request({ Url = url, Method = method, Headers = headers, Body = jsonBody })
+        end)
+    end
+    if http and type(http.request) == "function" then
+        table.insert(tries, function()
+            return http.request({ Url = url, Method = method, Headers = headers, Body = jsonBody })
+        end)
+    end
+    if type(http_request) == "function" then
+        table.insert(tries, function()
+            return http_request({ Url = url, Method = method, Headers = headers, Body = jsonBody })
+        end)
+    end
+    table.insert(tries, function()
+        if method == "GET" then
+            return HttpService:GetAsync(url)
+        end
+        return HttpService:PostAsync(url, jsonBody or "{}", Enum.HttpContentType.ApplicationJson)
+    end)
+    if method == "GET" and type(game.HttpGet) == "function" then
+        table.insert(tries, function() return game:HttpGet(url) end)
+    end
+
+    for _, fn in ipairs(tries) do
+        local ok, res = pcall(fn)
+        if ok then
+            local body = bodyOf(res)
+            if body then
+                local ok2, decoded = pcall(function() return HttpService:JSONDecode(body) end)
+                if ok2 and type(decoded) == "table" then
+                    return decoded
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local function updateOverheadVisuals(activeUsers)
     clearAllOverheadTags()
     if not Settings.ClientUsersESP then return end
-    if type(activeUsers) ~= "table" then return end
 
     for _, user in ipairs(activeUsers) do
-        local uid = tonumber(user.userid)
+        local uid = tonumber(user.userid) or tonumber(tostring(user.userid or ""))
         if not uid then
-            uid = tonumber(tostring(user.userid or ""))
-        end
-        if uid then
-        local player = Players:GetPlayerByUserId(uid)
-        if player and player ~= LocalPlayer and player.Character then
-            local head = player.Character:FindFirstChild("Head")
-            if head then
-                local old = head:FindFirstChild("PixelsUserTag")
-                if old then old:Destroy() end
+            -- skip
+        else
+            local player = Players:GetPlayerByUserId(uid)
+            if player and player ~= LocalPlayer and player.Character then
+                local head = player.Character:FindFirstChild("Head")
+                if head then
+                    local tag = Instance.new("BillboardGui")
+                    tag.Name = "PixelsUserTag"
+                    tag.Size = UDim2.new(0, 150, 0, 36)
+                    tag.StudsOffset = Vector3.new(0, 2.5, 0)
+                    tag.AlwaysOnTop = true
+                    tag.Parent = head
+                    UnloadSystem:TrackInstance(tag)
 
-                local tag = Instance.new("BillboardGui")
-                tag.Name = "PixelsUserTag"
-                tag.Size = UDim2.new(0, 170, 0, 48)
-                tag.StudsOffset = Vector3.new(0, 2.6, 0)
-                tag.AlwaysOnTop = true
-                tag.MaxDistance = 2500
-                tag.Parent = head
-                UnloadSystem:TrackInstance(tag)
+                    local dev = onlineDeviceOf(user)
+                    local ex = onlineExecOf(user)
+                    local extra = dev
+                    if ex then extra = extra .. " · " .. tostring(ex) end
 
-                local device = deviceLabelFromUser(user)
-                local exec = executorFromUser(user)
-                local gameName = tostring(user.game or "")
-                local line1 = "⚡ " .. tostring(user.displayname or user.username or player.DisplayName or player.Name)
-                local line2 = device
-                if exec and exec ~= "" and exec ~= "Unknown" then
-                    line2 = line2 .. " · " .. exec
+                    local label = Instance.new("TextLabel", tag)
+                    label.Size = UDim2.new(1, 0, 1, 0)
+                    label.BackgroundTransparency = 1
+                    label.Text = "⚡ " .. tostring(user.displayname or user.username or player.Name) .. "\n" .. extra
+                    label.TextColor3 = COLOR_TITLE
+                    label.TextStrokeTransparency = 0
+                    label.Font = BOLD_FONT
+                    label.TextSize = 11
+                    label.TextYAlignment = Enum.TextYAlignment.Top
                 end
-                if gameName ~= "" and gameName ~= tostring(game.PlaceId) then
-                    if #gameName > 22 then gameName = string.sub(gameName, 1, 20) .. ".." end
-                    line2 = line2 .. "\n" .. gameName
-                    tag.Size = UDim2.new(0, 180, 0, 56)
-                end
-
-                local label = Instance.new("TextLabel")
-                label.Size = UDim2.new(1, 0, 1, 0)
-                label.BackgroundTransparency = 1
-                label.Text = line1 .. "\n" .. line2
-                label.TextColor3 = COLOR_TITLE
-                label.TextStrokeTransparency = 0.3
-                label.Font = BOLD_FONT
-                label.TextSize = 11
-                label.TextYAlignment = Enum.TextYAlignment.Top
-                label.Parent = tag
             end
-        end
         end
     end
 end
@@ -1020,91 +948,63 @@ end
 local function updateServerStatus()
     local device = (PLATFORM and PLATFORM.Name) or "PC"
     local exec = (PLATFORM and PLATFORM.Executor) or "Unknown"
+    local placeName = tostring(game.PlaceId)
+    pcall(function()
+        local info = MarketplaceService:GetProductInfo(game.PlaceId)
+        if info and info.Name then placeName = tostring(info.Name) end
+    end)
+
     local data = {
         userid = tostring(LocalPlayer.UserId),
         username = LocalPlayer.Name,
         displayname = LocalPlayer.DisplayName,
-        game = getPlaceName(),
+        game = placeName,
         device = device,
         executor = exec,
         features = { device, exec, "PixelClient" },
     }
-    local res = apiHttp("POST", "heartbeat", data)
-    if not res then
-        res = apiHttp("POST", "update", data)
-    end
-    return res ~= nil
+    local json = HttpService:JSONEncode(data)
+    -- heartbeat (новый) + update (старый)
+    onlineHttp("POST", API_URL .. "?action=heartbeat", json)
+    onlineHttp("POST", API_URL .. "?action=update", json)
 end
 
 local function getActiveServerUsers()
-    local decoded = apiHttp("GET", "list", nil)
-    if decoded and (decoded.status == "ok" or decoded.users) then
+    local decoded = onlineHttp("GET", API_URL .. "?action=list", nil)
+    if decoded and decoded.status == "ok" then
         return decoded.users or {}
     end
-    return nil -- nil = ошибка сети, {} = пусто
+    return {}
 end
 
 task.spawn(function()
-    task.wait(1.5)
-    print("[PixelClient Online] start | device=" .. tostring(PLATFORM and PLATFORM.Name) .. " | exec=" .. tostring(PLATFORM and PLATFORM.Executor))
-
-    local hbOk = updateServerStatus()
-    print("[PixelClient Online] heartbeat: " .. (hbOk and "OK" or "FAIL"))
+    task.wait(2)
+    pcall(updateServerStatus)
 
     while UnloadSystem.Active do
-        local users = getActiveServerUsers()
-        if users == nil then
-            print("[PixelClient Online] list: FAIL (http)")
-            -- всё равно шлём heartbeat
-            updateServerStatus()
-            task.wait(8)
-        else
+        local okUsers, users = pcall(getActiveServerUsers)
+        if not okUsers then users = {} end
+        users = users or {}
+
+        if #users > 0 then
             for _, u in ipairs(users) do
                 local uid = tonumber(u.userid) or tonumber(tostring(u.userid or ""))
                 if uid then
                     local player = Players:GetPlayerByUserId(uid)
                     if player and player ~= LocalPlayer then
                         pixelClientUsers[player] = true
-                        if player.Character then
-                            pcall(function()
-                                player.Character:SetAttribute("PixelsClientUser", true)
-                            end)
-                        end
                     end
                 end
             end
-            updateOverheadVisuals(users)
-
-            if #users == 0 then
-                print("[PixelClient Online] list: 0 online")
-            else
-                local parts = {}
-                for _, u in ipairs(users) do
-                    local dev = deviceLabelFromUser(u)
-                    local ex = executorFromUser(u)
-                    local name = u.displayname or u.username or "?"
-                    local g = u.game or "?"
-                    table.insert(parts, string.format("%s [%s%s] @ %s", name, dev, ex and ("/" .. ex) or "", tostring(g)))
-                end
-                print("[PixelClient Online] " .. tostring(#users) .. " | " .. table.concat(parts, " || "))
-            end
-
-            updateServerStatus()
-            task.wait(10)
+            pcall(updateOverheadVisuals, users)
+        else
+            pcall(clearAllOverheadTags)
         end
+
+        pcall(updateServerStatus)
+        task.wait(12)
     end
 end)
-
--- при респавне других игроков — обновить client-user тег
-UnloadSystem:TrackConnection(Players.PlayerAdded:Connect(function(p)
-    if p == LocalPlayer then return end
-    p.CharacterAdded:Connect(function(char)
-        task.wait(0.5)
-        if pixelClientUsers[p] then
-            pcall(function() char:SetAttribute("PixelsClientUser", true) end)
-        end
-    end)
-end))
 
 -- ========================================================
 -- 5. МУЗЫКА И НОВАЯ МЕХАНИКА KILL SOUND & KILLSTREAK
@@ -2416,56 +2316,11 @@ local function Get2DBoundingBox(char, cam)
     return Vector2.new(minX, minY), Vector2.new(maxX - minX, maxY - minY)
 end
 
-local function EnsurePlayerESP(p)
-    if not p or p == LocalPlayer then return end
-    if not ESP_Cache[p] then
-        CreateDrawingESP(p)
-    end
-    -- на респавне персонажа перепривязать mobile ESP
-    if p.Character then
-        local cache = ESP_Cache[p]
-        if cache and cache.Mobile then
-            pcall(function() AttachMobileESP(p, p.Character) end)
-        end
-    end
-end
-
 for _, p in pairs(Players:GetPlayers()) do
-    EnsurePlayerESP(p)
-    if p ~= LocalPlayer then
-        UnloadSystem:TrackConnection(p.CharacterAdded:Connect(function(char)
-            task.wait(0.3)
-            -- сброс mobile-привязки
-            local cache = ESP_Cache[p]
-            if cache and cache.Mobile then
-                cache.Adornee = nil
-                pcall(function() if cache.Gui then cache.Gui:Destroy() end end)
-                cache.Gui = nil
-            end
-            EnsurePlayerESP(p)
-            if cache and cache.Mobile then
-                pcall(function() AttachMobileESP(p, char) end)
-            end
-        end))
-    end
+    if p ~= LocalPlayer then CreateDrawingESP(p) end
 end
 UnloadSystem:TrackConnection(Players.PlayerAdded:Connect(function(p)
-    if p == LocalPlayer then return end
-    task.wait(0.2)
-    EnsurePlayerESP(p)
-    UnloadSystem:TrackConnection(p.CharacterAdded:Connect(function(char)
-        task.wait(0.3)
-        local cache = ESP_Cache[p]
-        if cache and cache.Mobile then
-            cache.Adornee = nil
-            pcall(function() if cache.Gui then cache.Gui:Destroy() end end)
-            cache.Gui = nil
-        end
-        EnsurePlayerESP(p)
-        if ESP_Cache[p] and ESP_Cache[p].Mobile then
-            pcall(function() AttachMobileESP(p, char) end)
-        end
-    end))
+    if p ~= LocalPlayer then CreateDrawingESP(p) end
 end))
 UnloadSystem:TrackConnection(Players.PlayerRemoving:Connect(RemoveDrawingESP))
 UnloadSystem:TrackConnection(Players.PlayerRemoving:Connect(function(p)
@@ -9905,15 +9760,6 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function(dt)
     else
         if humLocal and not humLocal.AutoRotate then
             humLocal.AutoRotate = true
-        end
-    end
-
-    -- подстраховать: если кого-то нет в кэше ESP — создать
-    if Settings.TargetESP then
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer and not ESP_Cache[plr] then
-                pcall(function() CreateDrawingESP(plr) end)
-            end
         end
     end
 

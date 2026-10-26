@@ -14,7 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
-local CONFIG_FILE = "PixelClient-tsb.json"
+local CONFIG_FILE = "PixelClientConfirr.json"
 local PIXEL_CLIENT_TAG = ""
 local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
 local PLACE_ID = 10449761463
@@ -1063,7 +1063,7 @@ task.spawn(function()
         end
 
         pcall(updateServerStatus)
-        task.wait(12)
+        task.wait(2)
     end
 end)
 
@@ -5779,11 +5779,50 @@ local function startShadowFeint()
     UnloadSystem:TrackConnection(shadowFeintConn)
 end
 
-UnloadSystem:TrackConnection(LocalPlayer.CharacterAdded:Connect(function()
+UnloadSystem:TrackConnection(LocalPlayer.CharacterAdded:Connect(function(char)
     task.wait(0.8)
     if Settings.InvokerOrbs then startInvokerOrbs() end
     if Settings.ShadowFeint then startShadowFeint() end
+    -- синхронизация косметики после респавна
+    pcall(function()
+        if UpdateVisuals then UpdateVisuals(char) end
+    end)
 end))
+
+-- Синхронизация косметики каждые 2 сек (если пропала — вернуть)
+task.spawn(function()
+    local function anyCosmeticsOn()
+        return Settings.WingsEnabled or Settings.HaloEnabled or Settings.ChineseHat
+            or Settings.AuraEnabled or Settings.TrailEnabled or Settings.BodyOutline
+            or Settings.InvokerOrbs or Settings.ShadowFeint
+    end
+    local function cosmeticsMissing(char)
+        if not char then return false end
+        if Settings.WingsEnabled and not char:FindFirstChild("CustomWings") then return true end
+        if Settings.HaloEnabled and not char:FindFirstChild("CustomHalo") then return true end
+        if Settings.ChineseHat and not char:FindFirstChild("CustomChineseHat") then return true end
+        if Settings.AuraEnabled and not char:FindFirstChild("CustomAura") then return true end
+        if Settings.TrailEnabled then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if root and not root:FindFirstChild("PC_Trail0") then return true end
+        end
+        return false
+    end
+    while UnloadSystem.Active do
+        task.wait(2)
+        if not anyCosmeticsOn() then
+            -- nothing
+        else
+            local char = LocalPlayer.Character
+            if char and char.Parent and cosmeticsMissing(char) then
+                pcall(function()
+                    if UpdateVisuals then UpdateVisuals(char) end
+                end)
+            end
+        end
+    end
+end)
+
 
 
 end -- FillTabsCombatMovement

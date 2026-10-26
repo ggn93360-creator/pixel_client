@@ -14,7 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
-local CONFIG_FILE = "PixelClientConfirr.json"
+local CONFIG_FILE = "PixelClient-tsb.json"
 local PIXEL_CLIENT_TAG = ""
 local API_URL = "https://mjuchl2kvk.apps.bot-hosting.cloud/api.php"
 local PLACE_ID = 10449761463
@@ -317,7 +317,7 @@ local OriginalLighting = {
 
 local Settings = {
     AutoAim = false,
-    AimMode = 3, -- 1 Body, 2 Camera, 3 Both
+    AimMode = 1, -- only body (камера не крутится)
     AimSmooth = 0.45,
     AntiFling = false, -- default off; improved when on
     FakeLag = false,
@@ -1080,14 +1080,50 @@ local killSoundList = {
     {name = "Rust Headshot", id = "rbxassetid://1255040462"},
     {name = "TF2 Bell", id = "rbxassetid://2868336143"},
     {name = "COD Hitmarker", id = "rbxassetid://160432334"},
-    {name = "Kill 1", id = "rbxassetid://8688984970"},
-    {name = "Kill 2", id = "rbxassetid://111603509537199"},
-    {name = "Kill 3", id = "rbxassetid://124597285157146"},
-    {name = "Kill 4", id = "rbxassetid://108124705662203"},
-    {name = "Kill 5", id = "rbxassetid://82119541522499"},
-    {name = "Kill 6", id = "rbxassetid://130564433778401"},
-    {name = "Kill 7", id = "rbxassetid://87268739182946"},
+    {name = "恩", id = "rbxassetid://8688984970"},
+    {name = "эта женщина", id = "rbxassetid://111603509537199"},
+    {name = "SFX 124597", id = "rbxassetid://124597285157146"},
+    {name = "рипятя довойти", id = "rbxassetid://108124705662203"},
+    {name = "чяса", id = "rbxassetid://82119541522499"},
+    {name = "SFX 130564", id = "rbxassetid://130564433778401"},
+    {name = "SFX 872687", id = "rbxassetid://87268739182946"},
 }
+
+-- дефолтные имена по id (если в конфиге без name)
+local KILL_SOUND_DEFAULT_NAMES = {
+    ["8688984970"] = "恩",
+    ["111603509537199"] = "эта женщина",
+    ["124597285157146"] = "SFX 124597",
+    ["108124705662203"] = "рипятя довойти",
+    ["82119541522499"] = "чяса",
+    ["130564433778401"] = "SFX 130564",
+    ["87268739182946"] = "SFX 872687",
+    ["8679627751"] = "Neverlose Hit",
+    ["1255040462"] = "Rust Headshot",
+    ["2868336143"] = "TF2 Bell",
+    ["160432334"] = "COD Hitmarker",
+}
+
+local function normalizeKillSoundList(list)
+    if type(list) ~= "table" then return list end
+    for _, item in ipairs(list) do
+        if type(item) == "table" then
+            local id = tostring(item.id or ""):gsub("rbxassetid://", ""):gsub("%s", "")
+            if item.id and not tostring(item.id):find("rbxassetid", 1, true) then
+                item.id = "rbxassetid://" .. id
+            end
+            -- известные id — всегда ставим нормальное имя
+            if KILL_SOUND_DEFAULT_NAMES[id] then
+                item.name = KILL_SOUND_DEFAULT_NAMES[id]
+            elseif not item.name or item.name == "" or item.name == "Kill Sound"
+                or tostring(item.name):match("^Kill %d+$") or tostring(item.name):match("^%d+$") then
+                item.name = "Sound " .. id
+            end
+        end
+    end
+    return list
+end
+normalizeKillSoundList(killSoundList)
 
 local currentPlayingIndex = 0
 local currentKillSoundIndex = Settings.LastKillSoundIndex or 1
@@ -1282,7 +1318,33 @@ local function LoadConfig()
         end
 
         if result.CustomMusicList then musicList = result.CustomMusicList end
-        if result.CustomKillSoundList then killSoundList = result.CustomKillSoundList end
+        if result.CustomKillSoundList then
+            killSoundList = normalizeKillSoundList(result.CustomKillSoundList)
+        end
+        -- гарантируем наши 7 звуков с именами
+        do
+            local have = {}
+            for _, it in ipairs(killSoundList) do
+                local id = tostring(it.id or ""):gsub("rbxassetid://", "")
+                have[id] = true
+            end
+            local ensure = {
+                {name = "恩", id = "rbxassetid://8688984970"},
+                {name = "эта женщина", id = "rbxassetid://111603509537199"},
+                {name = "SFX 124597", id = "rbxassetid://124597285157146"},
+                {name = "рипятя довойти", id = "rbxassetid://108124705662203"},
+                {name = "чяса", id = "rbxassetid://82119541522499"},
+                {name = "SFX 130564", id = "rbxassetid://130564433778401"},
+                {name = "SFX 872687", id = "rbxassetid://87268739182946"},
+            }
+            for _, it in ipairs(ensure) do
+                local id = it.id:gsub("rbxassetid://", "")
+                if not have[id] then
+                    table.insert(killSoundList, it)
+                end
+            end
+            normalizeKillSoundList(killSoundList)
+        end
         
         currentVolume = Settings.MusicVolume or 0.5
         killSoundVolume = Settings.KillSoundVolume or 0.8
@@ -4039,7 +4101,7 @@ createToggle(CombatContainer, "Авто Аим", "AutoAim", nil, function(body)
     local hint = Instance.new("TextLabel", body)
     hint.Size = UDim2.new(1, 0, 0, 18)
     hint.BackgroundTransparency = 1
-    hint.Text = "Max height fixed: 20"
+    hint.Text = "Только тело (камера свободна) · height max 20"
     hint.TextColor3 = COLOR_TEXT_MUTED
     hint.Font = MAIN_FONT
     hint.TextSize = 11
@@ -9016,6 +9078,7 @@ local function RefreshMusicUI()
 end
 
 local function RefreshKillSoundUI()
+    normalizeKillSoundList(killSoundList)
     for _, child in pairs(KSScrollingList:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
@@ -9149,8 +9212,18 @@ end
 if AddKSBtn and KSNameBox and KSIDBox then
     UnloadSystem:TrackConnection(AddKSBtn.MouseButton1Click:Connect(function()
         local name, id = KSNameBox.Text, KSIDBox.Text
-        if name ~= "" and id ~= "" then
-            if not string.find(id, "rbxassetid://") then id = "rbxassetid://" .. id end
+        if id ~= "" then
+            local pure = tostring(id):gsub("rbxassetid://", ""):gsub("%s", "")
+            if not string.find(id, "rbxassetid://") then id = "rbxassetid://" .. pure end
+            if name == "" then
+                name = (KILL_SOUND_DEFAULT_NAMES and KILL_SOUND_DEFAULT_NAMES[pure]) or ("Sound " .. pure)
+                pcall(function()
+                    local info = game:GetService("MarketplaceService"):GetProductInfo(tonumber(pure), Enum.InfoType.Asset)
+                    if info and info.Name and info.Name ~= "" then
+                        name = info.Name
+                    end
+                end)
+            end
             table.insert(killSoundList, {name = name, id = id})
             KSNameBox.Text = ""
             KSIDBox.Text = ""
@@ -9507,39 +9580,29 @@ local function FaceTarget(targetRoot)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not root then return end
 
-    local mode = math.clamp(tonumber(Settings.AimMode) or 3, 1, 3)
-    -- 1 = только тело, 2 = только камера, 3 = тело + камера
-    local useBody = (mode == 1 or mode == 3)
-    local useCam = (mode == 2 or mode == 3)
+    -- Только тело: камеру после поворота возвращаем как была
     local smooth = tonumber(Settings.AimSmooth) or 0.45
-    smooth = math.clamp(smooth, 0.1, 1)
+    smooth = math.clamp(smooth, 0.15, 1)
 
     local currentPos = root.Position
     local targetPos = targetRoot.Position
-    local head = targetRoot.Parent and targetRoot.Parent:FindFirstChild("Head")
-    local aimAt = head and head.Position or (targetPos + Vector3.new(0, 1.5, 0))
+    local flat = Vector3.new(targetPos.X, currentPos.Y, targetPos.Z)
+    if (flat - currentPos).Magnitude < 0.05 then return end
 
-    if useBody then
-        if hum then hum.AutoRotate = false end
-        local flat = Vector3.new(targetPos.X, currentPos.Y, targetPos.Z)
-        if (flat - currentPos).Magnitude > 0.05 then
-            local goal = CFrame.lookAt(currentPos, flat)
-            root.CFrame = root.CFrame:Lerp(goal, math.clamp(smooth + 0.25, 0.2, 1))
-        end
-    else
-        -- камера-only: тело само крутится
-        if hum and not hum.AutoRotate then
-            hum.AutoRotate = true
-        end
+    if hum then
+        hum.AutoRotate = false
     end
 
-    if useCam and not Settings.TargetStrafe and not Settings.Desync then
-        local cam = Workspace.CurrentCamera
-        if cam then
-            local camPos = cam.CFrame.Position
-            local newCF = CFrame.lookAt(camPos, aimAt)
-            cam.CFrame = cam.CFrame:Lerp(newCF, smooth)
-        end
+    local cam = Workspace.CurrentCamera
+    local savedCamCF = cam and cam.CFrame or nil
+
+    local goal = CFrame.lookAt(currentPos, flat)
+    local alpha = math.clamp(smooth + 0.35, 0.3, 1)
+    root.CFrame = root.CFrame:Lerp(goal, alpha)
+
+    -- камера остаётся где была (не крутится вместе с телом)
+    if cam and savedCamCF then
+        cam.CFrame = savedCamCF
     end
 end
 
@@ -10284,12 +10347,18 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function(dt)
 
     if currentTarget and Settings.AutoAim and not Settings.TargetStrafe then
         local tRoot = currentTarget:FindFirstChild("HumanoidRootPart")
-        if tRoot then 
-            FaceTarget(tRoot) 
+        if tRoot then
+            FaceTarget(tRoot)
+        end
+        -- камера всегда на своём гуманоиде при pure aim
+        if cam and humLocal and cam.CameraSubject ~= humLocal then
+            cam.CameraSubject = humLocal
         end
     else
-        if humLocal and not humLocal.AutoRotate then
-            humLocal.AutoRotate = true
+        if humLocal and not Settings.TargetStrafe then
+            if not humLocal.AutoRotate then
+                humLocal.AutoRotate = true
+            end
         end
     end
 

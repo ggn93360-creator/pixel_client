@@ -389,6 +389,8 @@ local Settings = {
     Range = 16,
     MaxHeightDiff = 20, -- fixed, not in UI
     WallpaperUrl = "",
+    GuiWidth = 580,
+    GuiHeight = 360,
     JumpCircles = true,
     JoinSound = true,
     StarRain = false,
@@ -1242,6 +1244,8 @@ normalizeKillSoundList(killSoundList)
 
 local currentPlayingIndex = 0
 local currentKillSoundIndex = Settings.LastKillSoundIndex or 1
+        if Settings.GuiWidth == nil then Settings.GuiWidth = 580 end
+        if Settings.GuiHeight == nil then Settings.GuiHeight = 360 end
 local currentVolume = Settings.MusicVolume
 local killSoundVolume = Settings.KillSoundVolume or 0.8
 local isLooped = Settings.MusicLooped
@@ -1686,6 +1690,15 @@ local function SaveConfig()
 end
 
 local function LoadConfig()
+-- не даём конфигу оставить крошечный GUI
+do
+    local w = tonumber(Settings.GuiWidth) or 580
+    local h = tonumber(Settings.GuiHeight) or 360
+    if w < 400 then w = 580 end
+    if h < 280 then h = 360 end
+    Settings.GuiWidth = w
+    Settings.GuiHeight = h
+end
     if not readfile or not isfile or not isfile(CONFIG_FILE) then return end
     local success, result = pcall(function()
         return HttpService:JSONDecode(readfile(CONFIG_FILE))
@@ -3455,44 +3468,31 @@ MakeDraggable(ToggleBtn, nil, "ToggleBtn")
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-local function getViewport()
-    local cam = workspace.CurrentCamera
-    local vw = (cam and cam.ViewportSize.X) or 1280
-    local vh = (cam and cam.ViewportSize.Y) or 720
-    if vw < 100 then vw = 1280 end
-    if vh < 100 then vh = 720 end
-    return vw, vh
-end
+local MENU_SIZE = UDim2.new(0, 580, 0, 360)
+local MENU_POS = UDim2.new(0.5, -290, 0.5, -180)
 
-local function computeMenuLayout()
-    local vw, vh = getViewport()
-    -- целевой размер относительно экрана
-    local w = math.floor(vw * (IS_MOBILE and 0.94 or 0.58))
-    local h = math.floor(vh * (IS_MOBILE and 0.72 or 0.62))
-    -- clamp
-    if IS_MOBILE then
-        w = math.clamp(w, 280, math.min(440, vw - 12))
-        h = math.clamp(h, 320, math.min(560, vh - 24))
-    else
-        w = math.clamp(w, 560, math.min(820, vw - 40))
-        h = math.clamp(h, 380, math.min(560, vh - 40))
+local function applyMenuSize()
+    local w = math.clamp(tonumber(Settings.GuiWidth) or 580, 400, 900)
+    local h = math.clamp(tonumber(Settings.GuiHeight) or 360, 280, 700)
+    Settings.GuiWidth = w
+    Settings.GuiHeight = h
+    MENU_SIZE = UDim2.new(0, w, 0, h)
+    MENU_POS = UDim2.new(0.5, -math.floor(w / 2), 0.5, -math.floor(h / 2))
+    if mainFrame and mainFrame.Parent then
+        mainFrame.Size = MENU_SIZE
+        -- позицию не сбрасываем если уже таскали — только размер
+        if not Settings.Positions or not Settings.Positions.MainFrame then
+            mainFrame.Position = MENU_POS
+        end
     end
-    -- чуть выше и левее центра
-    local ox = -math.floor(w * 0.55)
-    local oy = -math.floor(h * 0.58)
-    -- не вылезать за края
-    local cx = math.floor(vw * 0.5) + ox
-    local cy = math.floor(vh * 0.5) + oy
-    if cx < 8 then ox = ox + (8 - cx) end
-    if cy < 8 then oy = oy + (8 - cy) end
-    if cx + w > vw - 8 then ox = ox - ((cx + w) - (vw - 8)) end
-    if cy + h > vh - 8 then oy = oy - ((cy + h) - (vh - 8)) end
-    return UDim2.new(0, w, 0, h), UDim2.new(0.5, ox, 0.5, oy), w, h
 end
 
-local MENU_SIZE, MENU_POS = computeMenuLayout()
-mainFrame.Size = MENU_SIZE
-mainFrame.Position = MENU_POS
+local function applyResponsiveGui()
+    applyMenuSize()
+end
+
+applyMenuSize()
+
 mainFrame.BackgroundColor3 = COLOR_WINDOW_BG
 mainFrame.BorderSizePixel = 0
 mainFrame.ClipsDescendants = true
@@ -3704,19 +3704,8 @@ addPadding(contentArea, 12, 12, 12, 12)
 
 local isMenuOpen = true
 local isTweening = false
--- MENU_SIZE / MENU_POS уже из computeMenuLayout()
-local function refreshMenuLayout(keepPos)
-    local size, pos = computeMenuLayout()
-    MENU_SIZE = size
-    if not keepPos then
-        MENU_POS = pos
-    end
-    if mainFrame and mainFrame.Parent then
-        mainFrame.Size = MENU_SIZE
-        if not keepPos then
-            mainFrame.Position = MENU_POS
-        end
-    end
+local function refreshMenuLayout()
+    applyResponsiveGui()
 end
 
 local mainScale = mainFrame:FindFirstChild("MenuScale")
@@ -3783,23 +3772,19 @@ end))
 UnloadSystem:TrackConnection(homeBtn.MouseButton1Click:Connect(toggleMenu))
 UnloadSystem:TrackConnection(ToggleBtn.MouseButton1Click:Connect(toggleMenu))
 
--- авто-подстройка GUI под экран
-task.spawn(function()
-    local lastVW, lastVH = 0, 0
-    while UnloadSystem.Active and mainFrame.Parent do
-        local vw, vh = getViewport()
-        if vw ~= lastVW or vh ~= lastVH then
-            lastVW, lastVH = vw, vh
-            refreshMenuLayout(false)
-        end
-        task.wait(0.5)
-    end
-end)
+-- подстройка под экран при ресайзе
 pcall(function()
     local cam = workspace.CurrentCamera
     if cam then
         UnloadSystem:TrackConnection(cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-            refreshMenuLayout(false)
+            if isMenuOpen then
+                applyResponsiveGui()
+            else
+                -- обновить MENU_* чтобы при открытии было ок
+                local oldVis = mainFrame.Visible
+                applyResponsiveGui()
+                mainFrame.Visible = oldVis
+            end
         end))
     end
 end)
@@ -5125,14 +5110,25 @@ standBindHint.TextXAlignment = Enum.TextXAlignment.Left
 
 
 -- ===== Visuals sub-tabs (shared scope) =====
-VisSubBar = Instance.new("Frame", VisualsContainer)
-VisSubBar.Size = UDim2.new(1, -6, 0, 30)
+VisSubBar = Instance.new("ScrollingFrame", VisualsContainer)
+VisSubBar.Size = UDim2.new(1, -6, 0, 34)
 VisSubBar.BackgroundTransparency = 1
 VisSubBar.LayoutOrder = 0
+VisSubBar.ScrollBarThickness = 3
+VisSubBar.ScrollBarImageColor3 = COLOR_ACCENT
+VisSubBar.ScrollingDirection = Enum.ScrollingDirection.X
+VisSubBar.CanvasSize = UDim2.new(0, 0, 0, 0)
+VisSubBar.AutomaticCanvasSize = Enum.AutomaticSize.X
+VisSubBar.ElasticBehavior = Enum.ElasticBehavior.Always
+VisSubBar.BorderSizePixel = 0
 local VisSubLayout = Instance.new("UIListLayout", VisSubBar)
 VisSubLayout.FillDirection = Enum.FillDirection.Horizontal
 VisSubLayout.Padding = UDim.new(0, 4)
 VisSubLayout.SortOrder = Enum.SortOrder.LayoutOrder
+VisSubLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+local VisSubPad = Instance.new("UIPadding", VisSubBar)
+VisSubPad.PaddingLeft = UDim.new(0, 2)
+VisSubPad.PaddingRight = UDim.new(0, 8)
 
 local function makeVisPage(name)
     local page = Instance.new("Frame", VisualsContainer)
@@ -5190,7 +5186,7 @@ end
 for i, name in ipairs({"ESP", "Cosmetics", "GUI", "Sound", "FX", "Shaders"}) do
     local b = Instance.new("TextButton", VisSubBar)
     b.Name = "VisBtn_" .. name
-    b.Size = UDim2.new(0, 70, 1, 0)
+    b.Size = UDim2.new(0, 72, 0, 28)
     b.BackgroundColor3 = (name == "ESP") and COLOR_TAB_ACTIVE or COLOR_CARD_BG
     b.Text = name
     b.TextColor3 = (name == "ESP") and COLOR_TEXT or COLOR_TEXT_MUTED
@@ -5867,6 +5863,36 @@ do
     t.Font = BOLD_FONT
     t.TextSize = 14
     t.TextXAlignment = Enum.TextXAlignment.Left
+
+    createStepper(VisGUI, "Width",
+        function() return tostring(Settings.GuiWidth or 580) end,
+        function()
+            Settings.GuiWidth = math.clamp((Settings.GuiWidth or 580) - 20, 400, 900)
+            applyMenuSize()
+        end,
+        function()
+            Settings.GuiWidth = math.clamp((Settings.GuiWidth or 580) + 20, 400, 900)
+            applyMenuSize()
+        end
+    )
+    createStepper(VisGUI, "Height",
+        function() return tostring(Settings.GuiHeight or 360) end,
+        function()
+            Settings.GuiHeight = math.clamp((Settings.GuiHeight or 360) - 20, 280, 700)
+            applyMenuSize()
+        end,
+        function()
+            Settings.GuiHeight = math.clamp((Settings.GuiHeight or 360) + 20, 280, 700)
+            applyMenuSize()
+        end
+    )
+    createButton("Reset Size 580x360", VisGUI, function()
+        Settings.GuiWidth = 580
+        Settings.GuiHeight = 360
+        applyMenuSize()
+        mainFrame.Position = MENU_POS
+    end)
+
     local wallBox = Instance.new("TextBox", VisGUI)
     wallBox.Size = UDim2.new(1, -8, 0, 32)
     wallBox.BackgroundColor3 = COLOR_SIDEBAR
@@ -8621,27 +8647,14 @@ makeDesyncBtn("A", "A", UDim2.new(0, 5, 0, 52))
 makeDesyncBtn("D", "D", UDim2.new(0, 100, 0, 52))
 makeDesyncBtn("⬆", "Space", UDim2.new(0, 53, 0, 52))
 
--- ===== MOBILE QUICK BAR — только телефон, на ПК не создаём =====
+-- ===== MOBILE BINDS — отдельные кнопки, каждую можно двигать =====
 local QuickBar = nil
-if PLATFORM.IsMobile or IS_MOBILE then
+local MobileBindButtons = {}
+if PLATFORM.IsMobile or IS_MOBILE or UserInputService.TouchEnabled then
     Settings.QuickBar = true
-    QuickBar = Instance.new("Frame", HudGui)
-    QuickBar.Name = "MobileQuickBar"
-    QuickBar.Size = UDim2.new(0, 340, 0, 44)
-    QuickBar.Position = UDim2.new(0.5, -170, 1, -58)
-    QuickBar.BackgroundColor3 = COLOR_CARD_BG
-    QuickBar.BackgroundTransparency = 0.15
-    QuickBar.Visible = true
-    QuickBar.Parent = ScreenGui
-    addCorner(QuickBar, 10)
-    local qbLayout = Instance.new("UIListLayout", QuickBar)
-    qbLayout.FillDirection = Enum.FillDirection.Horizontal
-    qbLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    qbLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-    qbLayout.Padding = UDim.new(0, 4)
-    local qbPad = Instance.new("UIPadding", QuickBar)
-    qbPad.PaddingLeft = UDim.new(0, 4)
-    qbPad.PaddingRight = UDim.new(0, 4)
+    -- контейнер-метка (невидимый), для совместимости
+    QuickBar = Instance.new("Folder", HudGui)
+    QuickBar.Name = "MobileBindButtons"
 
     local MOBILE_LABELS = {
         AutoAim = "Aim",
@@ -8651,37 +8664,57 @@ if PLATFORM.IsMobile or IS_MOBILE then
         FakeLag = "FLag",
         Backtrack = "BTrack",
         TargetStrafe = "Strafe",
-        AnimInvis = "Invis",
         TargetESP = "ESP",
-        StandEnabled = "Stand",
-        FlingEnabled = "Fling",
-        TargetSkillChat = "Skill",
         Fullbright = "FB",
         JerkOff = "Jerk",
         ClientUsersESP = "Users",
     }
 
-    local function clearQuickChildren()
-        for _, ch in ipairs(QuickBar:GetChildren()) do
-            if ch:IsA("TextButton") then ch:Destroy() end
+    local function clearMobileBindButtons()
+        for _, b in pairs(MobileBindButtons) do
+            pcall(function() b:Destroy() end)
+        end
+        MobileBindButtons = {}
+        if QuickBar then
+            for _, ch in ipairs(QuickBar:GetChildren()) do
+                pcall(function() ch:Destroy() end)
+            end
         end
     end
 
-    local function makeQuickToggle(label, settingKey)
-        local b = Instance.new("TextButton", QuickBar)
-        b.Size = UDim2.new(0, 56, 0, 38)
-        b.BackgroundColor3 = COLOR_SIDEBAR
+    local function makeSeparateBindButton(label, settingKey, index)
+        local posKey = "MobileBtn_" .. tostring(settingKey)
+        local b = Instance.new("TextButton")
+        b.Name = "MB_" .. settingKey
+        b.Size = UDim2.new(0, 64, 0, 44)
+        -- дефолт: ряд снизу, каждая отдельно
+        local defaultPos = UDim2.new(0, 12 + (index - 1) * 72, 1, -70)
+        if Settings.Positions and Settings.Positions[posKey] then
+            local p = Settings.Positions[posKey]
+            b.Position = UDim2.new(p.XS or 0, p.XO or 0, p.YS or 1, p.YO or -70)
+        else
+            b.Position = defaultPos
+        end
+        b.BackgroundColor3 = COLOR_CARD_BG
+        b.BackgroundTransparency = 0.1
         b.Text = label
         b.TextColor3 = COLOR_TEXT_MUTED
         b.Font = BOLD_FONT
-        b.TextSize = 11
+        b.TextSize = 12
         b.AutoButtonColor = true
         b.Active = true
-        addCorner(b, 8)
+        b.Parent = HudGui
+        addCorner(b, 10)
+        local st = Instance.new("UIStroke", b)
+        st.Color = COLOR_STROKE
+        st.Thickness = 1.2
+        UnloadSystem:TrackInstance(b)
+
         local function refresh()
             local on = Settings[settingKey]
-            b.BackgroundColor3 = on and COLOR_TAB_ACTIVE or COLOR_SIDEBAR
+            b.BackgroundColor3 = on and COLOR_TAB_ACTIVE or COLOR_CARD_BG
             b.TextColor3 = on and COLOR_TITLE or COLOR_TEXT_MUTED
+            st.Color = on and COLOR_ACCENT or COLOR_STROKE
         end
         local function press()
             if Actions[settingKey] then
@@ -8691,58 +8724,88 @@ if PLATFORM.IsMobile or IS_MOBILE then
             end
             refresh()
         end
-        b.MouseButton1Click:Connect(press)
+        -- тап без конфликта с drag: короткий тач = press
+        local touchStart, touchPos
         b.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Touch then
-                press()
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                touchStart = tick()
+                touchPos = input.Position
             end
         end)
+        b.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                if touchStart and touchPos and (tick() - touchStart) < 0.22 then
+                    local d = (input.Position - touchPos).Magnitude
+                    if d < 12 then press() end
+                end
+                touchStart, touchPos = nil, nil
+            end
+        end)
+
+        MakeDraggable(b, b, posKey)
         UnloadSystem:TrackConnection(RunService.Heartbeat:Connect(function()
-            if QuickBar and QuickBar.Visible then refresh() end
+            if b.Parent and b.Visible then refresh() end
         end))
         refresh()
+        MobileBindButtons[settingKey] = b
         return b
     end
 
     local function rebuildQuickBar()
-        if not QuickBar then return end
-        clearQuickChildren()
+        clearMobileBindButtons()
+        if Settings.QuickBar == false then return end
         if type(Settings.MobileBinds) ~= "table" then
             Settings.MobileBinds = { "AutoAim", "SpeedEnabled", "FlyEnabled", "AntiFling", "TargetStrafe", "TargetESP" }
         end
+        local i = 0
         for _, key in ipairs(Settings.MobileBinds) do
+            i += 1
             local label = MOBILE_LABELS[key] or tostring(key):sub(1, 6)
-            makeQuickToggle(label, key)
+            makeSeparateBindButton(label, key, i)
         end
-        -- кнопка Die всегда
-        local b = Instance.new("TextButton", QuickBar)
-        b.Size = UDim2.new(0, 50, 0, 38)
+        -- Die отдельно
+        i += 1
+        local dieKey = "_Die"
+        local posKey = "MobileBtn_Die"
+        local b = Instance.new("TextButton")
+        b.Name = "MB_Die"
+        b.Size = UDim2.new(0, 64, 0, 44)
+        if Settings.Positions and Settings.Positions[posKey] then
+            local p = Settings.Positions[posKey]
+            b.Position = UDim2.new(p.XS or 0, p.XO or 0, p.YS or 1, p.YO or -70)
+        else
+            b.Position = UDim2.new(0, 12 + (i - 1) * 72, 1, -70)
+        end
         b.BackgroundColor3 = Color3.fromRGB(120, 40, 50)
         b.Text = "Die"
         b.TextColor3 = Color3.fromRGB(255, 180, 180)
         b.Font = BOLD_FONT
-        b.TextSize = 11
-        addCorner(b, 8)
+        b.TextSize = 12
+        b.Active = true
+        b.Parent = HudGui
+        addCorner(b, 10)
+        UnloadSystem:TrackInstance(b)
         b.MouseButton1Click:Connect(function()
             if Actions.Suicide then Actions.Suicide() end
         end)
-        -- ширина бара
-        local n = #Settings.MobileBinds + 1
-        QuickBar.Size = UDim2.new(0, math.clamp(n * 62 + 16, 200, 420), 0, 48)
-        QuickBar.Position = UDim2.new(0.5, -QuickBar.Size.X.Offset / 2, 1, -62)
+        MakeDraggable(b, b, posKey)
+        MobileBindButtons[dieKey] = b
     end
     _G.PixelRebuildQuickBar = rebuildQuickBar
     rebuildQuickBar()
 
     local function refreshQuickBarVis()
-        if not QuickBar then return end
-        local show = (PLATFORM.IsMobile or UserInputService.TouchEnabled) and Settings.QuickBar ~= false
-        QuickBar.Visible = show
+        local show = Settings.QuickBar ~= false
+        for _, b in pairs(MobileBindButtons) do
+            if b then b.Visible = show end
+        end
     end
     refreshQuickBarVis()
-    UI_Toggles["QuickBar"] = refreshQuickBarVis
+    UI_Toggles["QuickBar"] = function()
+        refreshQuickBarVis()
+        if Settings.QuickBar ~= false then rebuildQuickBar() end
+    end
 else
-    -- ПК без тача: бар можно включить если Touch
     Settings.QuickBar = false
 end
 

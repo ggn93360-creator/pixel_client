@@ -3455,18 +3455,44 @@ MakeDraggable(ToggleBtn, nil, "ToggleBtn")
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-if IS_MOBILE then
+local function getViewport()
     local cam = workspace.CurrentCamera
-    local vw = (cam and cam.ViewportSize.X) or 400
-    local vh = (cam and cam.ViewportSize.Y) or 700
-    local w = math.min(math.floor(vw * 0.94), 420)
-    local h = math.min(math.floor(vh * 0.72), 480)
-    mainFrame.Size = UDim2.new(0, w, 0, h)
-    mainFrame.Position = UDim2.new(0.5, -math.floor(w / 2), 0.5, -math.floor(h / 2))
-else
-    mainFrame.Size = UDim2.new(0, 720, 0, 440)
-    mainFrame.Position = UDim2.new(0.5, -400, 0.5, -240)
+    local vw = (cam and cam.ViewportSize.X) or 1280
+    local vh = (cam and cam.ViewportSize.Y) or 720
+    if vw < 100 then vw = 1280 end
+    if vh < 100 then vh = 720 end
+    return vw, vh
 end
+
+local function computeMenuLayout()
+    local vw, vh = getViewport()
+    -- целевой размер относительно экрана
+    local w = math.floor(vw * (IS_MOBILE and 0.94 or 0.58))
+    local h = math.floor(vh * (IS_MOBILE and 0.72 or 0.62))
+    -- clamp
+    if IS_MOBILE then
+        w = math.clamp(w, 280, math.min(440, vw - 12))
+        h = math.clamp(h, 320, math.min(560, vh - 24))
+    else
+        w = math.clamp(w, 560, math.min(820, vw - 40))
+        h = math.clamp(h, 380, math.min(560, vh - 40))
+    end
+    -- чуть выше и левее центра
+    local ox = -math.floor(w * 0.55)
+    local oy = -math.floor(h * 0.58)
+    -- не вылезать за края
+    local cx = math.floor(vw * 0.5) + ox
+    local cy = math.floor(vh * 0.5) + oy
+    if cx < 8 then ox = ox + (8 - cx) end
+    if cy < 8 then oy = oy + (8 - cy) end
+    if cx + w > vw - 8 then ox = ox - ((cx + w) - (vw - 8)) end
+    if cy + h > vh - 8 then oy = oy - ((cy + h) - (vh - 8)) end
+    return UDim2.new(0, w, 0, h), UDim2.new(0.5, ox, 0.5, oy), w, h
+end
+
+local MENU_SIZE, MENU_POS = computeMenuLayout()
+mainFrame.Size = MENU_SIZE
+mainFrame.Position = MENU_POS
 mainFrame.BackgroundColor3 = COLOR_WINDOW_BG
 mainFrame.BorderSizePixel = 0
 mainFrame.ClipsDescendants = true
@@ -3678,8 +3704,21 @@ addPadding(contentArea, 12, 12, 12, 12)
 
 local isMenuOpen = true
 local isTweening = false
-local MENU_SIZE = UDim2.new(0, 720, 0, 440)
-local MENU_POS = UDim2.new(0.5, -400, 0.5, -240)
+-- MENU_SIZE / MENU_POS уже из computeMenuLayout()
+local function refreshMenuLayout(keepPos)
+    local size, pos = computeMenuLayout()
+    MENU_SIZE = size
+    if not keepPos then
+        MENU_POS = pos
+    end
+    if mainFrame and mainFrame.Parent then
+        mainFrame.Size = MENU_SIZE
+        if not keepPos then
+            mainFrame.Position = MENU_POS
+        end
+    end
+end
+
 local mainScale = mainFrame:FindFirstChild("MenuScale")
 if not mainScale then
     mainScale = Instance.new("UIScale")
@@ -3697,7 +3736,7 @@ local function toggleMenu()
     if isMenuOpen then
         TweenService:Create(mainScale, tiIn, { Scale = 0.84 }):Play()
         TweenService:Create(mainFrame, tiIn, {
-            Position = UDim2.new(0.5, -400, 0.5, -270),
+            Position = MENU_POS,
             BackgroundTransparency = 0.4,
         }):Play()
         task.delay(0.2, function()
@@ -3717,7 +3756,7 @@ local function toggleMenu()
     else
         mainFrame.Visible = true
         mainFrame.Size = MENU_SIZE
-        mainFrame.Position = UDim2.new(0.5, -400, 0.5, -210)
+        mainFrame.Position = MENU_POS
         mainFrame.BackgroundTransparency = 0.45
         mainScale.Scale = 0.88
         TweenService:Create(mainScale, tiOut, { Scale = 1 }):Play()
@@ -3743,6 +3782,27 @@ end))
 
 UnloadSystem:TrackConnection(homeBtn.MouseButton1Click:Connect(toggleMenu))
 UnloadSystem:TrackConnection(ToggleBtn.MouseButton1Click:Connect(toggleMenu))
+
+-- авто-подстройка GUI под экран
+task.spawn(function()
+    local lastVW, lastVH = 0, 0
+    while UnloadSystem.Active and mainFrame.Parent do
+        local vw, vh = getViewport()
+        if vw ~= lastVW or vh ~= lastVH then
+            lastVW, lastVH = vw, vh
+            refreshMenuLayout(false)
+        end
+        task.wait(0.5)
+    end
+end)
+pcall(function()
+    local cam = workspace.CurrentCamera
+    if cam then
+        UnloadSystem:TrackConnection(cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            refreshMenuLayout(false)
+        end))
+    end
+end)
 
 -- ========================================================
 -- 8. ВКЛАДКИ И КОМПОНЕНТЫ

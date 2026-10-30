@@ -235,12 +235,15 @@ local function resolveImageForGui(url)
         elseif lower:find(".gif", 1, true) then
             ext = ".gif"
         end
-        -- уникальное имя по url
-        local hash = tostring(#url)
-        for i = 1, math.min(#url, 40) do
-            hash = hash .. string.byte(url, i)
+        -- уникальное имя по полному url (чтобы g1/g2 не пересекались)
+        local hash = ""
+        for i = 1, #url do
+            hash = hash .. string.format("%02x", string.byte(url, i) % 256)
         end
-        local fileName = "pixel_wall_" .. hash:sub(1, 24) .. ext
+        -- берём хвост url (имя файла) + короткий hash
+        local base = url:match("([^/]+)$") or "wall"
+        base = base:gsub("[^%w%.%-_]", "_")
+        local fileName = "pixel_wall_" .. base:sub(1, 40) .. "_" .. hash:sub(1, 16) .. ext
 
         local data = httpGetBinary(url)
         if not data then
@@ -268,6 +271,41 @@ local function resolveImageForGui(url)
     end
     return url
 end
+
+
+local function ensureLocalMedia(url, fileName)
+    url = tostring(url or "")
+    fileName = tostring(fileName or "pixel_media.bin")
+    if url == "" then return "" end
+    local function tryAsset()
+        if getcustomasset and isfile and isfile(fileName) then
+            local ok, asset = pcall(function() return getcustomasset(fileName) end)
+            if ok and type(asset) == "string" and asset ~= "" then return asset end
+        end
+        return nil
+    end
+    local existing = tryAsset()
+    if existing then return existing end
+    if writefile then
+        local data = httpGetBinary(url)
+        if data then
+            pcall(function() writefile(fileName, data) end)
+            local a = tryAsset()
+            if a then return a end
+        end
+    end
+    return url
+end
+
+local JOIN_SOUND_URL = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/sound/11.mp3"
+local HIT_SOUND_LOCAL_URL = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/sound/ston.ogg"
+local JUMP_CIRCLE_URL = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/visuals/circles1.png"
+local cachedJoinSoundId, cachedHitSoundId, cachedJumpCircleImage = "", "", ""
+task.spawn(function()
+    cachedJoinSoundId = ensureLocalMedia(JOIN_SOUND_URL, "pixel_join_11.mp3")
+    cachedHitSoundId = ensureLocalMedia(HIT_SOUND_LOCAL_URL, "pixel_hit_ston.ogg")
+    cachedJumpCircleImage = ensureLocalMedia(JUMP_CIRCLE_URL, "pixel_jump_circles1.png")
+end)
 
 -- ========================================================
 -- 1. СИСТЕМА ВЫГРУЗКИ (UNINJECT SYSTEM)
@@ -351,6 +389,14 @@ local Settings = {
     Range = 16,
     MaxHeightDiff = 20, -- fixed, not in UI
     WallpaperUrl = "",
+    JumpCircles = true,
+    JoinSound = true,
+    StarRain = false,
+    StarRainStyle = 1, -- 1 White 2 Gold 3 Sakura 4 Rainbow 5 Cyan 6 Red
+    StarRainRate = 45,
+    StarRainSpeed = 28,
+    StarRainSize = 1.0,
+    StarRainSpread = 90,
     ShowTutorial = true,
     SpeedEnabled = false,
     SpeedValue = 24,
@@ -363,10 +409,10 @@ local Settings = {
     StrafeSpeed = 15,
     AnimInvis = false, -- REMOVED
     Desync = false,
-    AutoFarm = false,          -- фарм всех (ближайший)
-    AutoFarmTarget = false,    -- фарм только выбранной цели
-    AutoFarmLowHP = false,     -- фарм только low HP
-    AutoFarmTroll = false,
+    AutoFarm = false,          -- REMOVED
+    AutoFarmTarget = false,    -- REMOVED
+    AutoFarmLowHP = false,     -- REMOVED
+    AutoFarmTroll = false,     -- REMOVED
     ChainFarm = false,
     FarmRadius = 18,
     FarmHitDistance = 4.5,
@@ -478,7 +524,7 @@ local Settings = {
     HitImpactFX = false,
     HitSlashFX = false,
     HitPixels = false,
-    HitSound = false,
+    HitSound = true,
     HitSoundVolume = 0.7,
     HitScreenShake = false,
     HitNumbers = false,
@@ -486,7 +532,7 @@ local Settings = {
     TargetHUD = false,
     SkillHUD = false,
     KillstreakHUD = false,
-    MusicHUD = false,
+    MusicHUD = false, -- REMOVED
     KeybindHUD = false,
     Watermark = false,
     Fullbright = false,
@@ -501,7 +547,7 @@ local Settings = {
     LastTrackIndex = 0,
     Killstreak = 0,
     Positions = {},
-    KillSoundEnabled = false,
+    KillSoundEnabled = true,
     KillSoundVolume = 0.8,
     LastKillSoundIndex = 1,
     GUI_Open = true,
@@ -509,7 +555,8 @@ local Settings = {
     SpeedZeroPing = false, -- removed
     SpeedBoost = 1.0,
     TargetSkillChat = false, -- в Trolling
-    StandEnabled = false,
+    StandEnabled = false, -- troll removed
+
     StandStyle = 1,           -- 1 StarPlatinum 2 TheWorld 3 KillerQueen 4 CrazyDiamond 5 Hierophant 6 GoldExperience
     StandVariant = 1,         -- 1 Default 2 Requiem 3 Overheaven 4 Shadow
     StandDistance = 3.2,
@@ -517,7 +564,8 @@ local Settings = {
     StandM1Counter = false, -- removed
     StandNoMoveTarget = true, -- скилл/блок не трогают тело таргета
     TrollingTarget = "",
-    FlingEnabled = false,
+    FlingEnabled = false, -- troll removed
+
     JerkOff = false,
     MessageHUD = false,
     QuickBar = PLATFORM.IsMobile, -- только мобилка, на ПК всегда false
@@ -560,7 +608,7 @@ local Actions = {
     ShadowFeint = function() toggleSetting("ShadowFeint") end,
     FlingEnabled = function() toggleSetting("FlingEnabled") end,
     JerkOff = function() toggleSetting("JerkOff") end,
-    Desync = function() Settings.Desync = false end, -- removed
+    Desync = function() toggleSetting("Desync") end,
     AutoFarm = function() toggleSetting("AutoFarm") end,
     AutoFarmTarget = function() toggleSetting("AutoFarmTarget") end,
     AutoFarmLowHP = function() toggleSetting("AutoFarmLowHP") end,
@@ -1200,8 +1248,8 @@ local isLooped = Settings.MusicLooped
 
 local backgroundSound = Instance.new("Sound")
 backgroundSound.Name = "PixelClientBackgroundMusic"
-backgroundSound.Volume = currentVolume
-backgroundSound.Looped = isLooped
+backgroundSound.Volume = 0
+backgroundSound.Looped = false
 backgroundSound.RollOffMaxDistance = 10000
 backgroundSound.RollOffMinDistance = 10000
 backgroundSound.EmitterSize = 10
@@ -1234,14 +1282,14 @@ local function PlayKillSound(index)
     end
 end
 
--- Hit sound (ston.ogg)
-local HIT_SOUND_URL = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/sound/ston.ogg"
+-- Hit / Join / Jump media
+local HIT_SOUND_URL = HIT_SOUND_LOCAL_URL
 local hitSoundPool = {}
 for i = 1, 4 do
     local s = Instance.new("Sound")
     s.Name = "PixelClientHitSound_" .. i
     s.Volume = Settings.HitSoundVolume or 0.7
-    s.SoundId = HIT_SOUND_URL
+    s.SoundId = ""
     s.Parent = SoundService
     table.insert(hitSoundPool, s)
     UnloadSystem:TrackInstance(s)
@@ -1254,16 +1302,295 @@ local function PlayHitSound()
     if tick() - lastHitSoundTime < 0.08 then return end
     lastHitSoundTime = tick()
     pcall(function()
+        local sid = cachedHitSoundId
+        if not sid or sid == "" then
+            sid = ensureLocalMedia(HIT_SOUND_LOCAL_URL, "pixel_hit_ston.ogg")
+            cachedHitSoundId = sid
+        end
+        if not sid or sid == "" then return end
         local s = hitSoundPool[hitPoolIndex]
         hitPoolIndex = (hitPoolIndex % #hitSoundPool) + 1
         if not s then return end
         s:Stop()
-        s.SoundId = HIT_SOUND_URL
+        s.SoundId = sid
         s.Volume = Settings.HitSoundVolume or 0.7
         s.TimePosition = 0
         s:Play()
     end)
 end
+
+local function PlayJoinSound()
+    task.spawn(function()
+        local sid = cachedJoinSoundId
+        if not sid or sid == "" then
+            -- ждём скачивания
+            for _ = 1, 15 do
+                sid = ensureLocalMedia(JOIN_SOUND_URL, "pixel_join_11.mp3")
+                if sid and sid ~= "" and not string.find(sid, "github.com", 1, true) then
+                    break
+                end
+                task.wait(0.25)
+            end
+            -- если getcustomasset не дал — raw URL как fallback иногда не играет; пробуем оба
+            if not sid or sid == "" then
+                sid = JOIN_SOUND_URL
+            end
+            cachedJoinSoundId = sid
+        end
+        print("[PixelClient] JoinSound id:", tostring(sid):sub(1, 80))
+        local s = Instance.new("Sound")
+        s.Name = "PixelClientJoinSound"
+        s.SoundId = sid
+        s.Volume = 1
+        s.Looped = false
+        s.Parent = SoundService
+        UnloadSystem:TrackInstance(s)
+        -- дождаться загрузки
+        local t0 = tick()
+        while not s.IsLoaded and tick() - t0 < 8 do
+            task.wait(0.1)
+        end
+        pcall(function() s:Play() end)
+        if not s.IsPlaying then
+            -- второй шанс: Workspace parent
+            pcall(function()
+                s.Parent = Workspace
+                s:Play()
+            end)
+        end
+        task.delay(25, function() pcall(function() s:Destroy() end) end)
+    end)
+end
+
+local function spawnJumpCircle(pos)
+    if Settings.JumpCircles == false then return end
+    task.spawn(function()
+        local img = cachedJumpCircleImage
+        if not img or img == "" then
+            img = ensureLocalMedia(JUMP_CIRCLE_URL, "pixel_jump_circles1.png")
+            cachedJumpCircleImage = img
+        end
+        if not img or img == "" then return end
+        -- строго под игроком: XZ от HRP, Y с raycast вниз
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hx, hz = pos.X, pos.Z
+        if root then
+            hx, hz = root.Position.X, root.Position.Z
+            pos = root.Position
+        end
+        local origin = Vector3.new(hx, pos.Y + 1.5, hz)
+        local ground = Vector3.new(hx, pos.Y - 3, hz)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char }
+        local hit = Workspace:Raycast(origin, Vector3.new(0, -25, 0), params)
+        if hit then
+            ground = Vector3.new(hx, hit.Position.Y + 0.04, hz)
+        else
+            ground = Vector3.new(hx, pos.Y - 3, hz)
+        end
+        local p = Instance.new("Part")
+        p.Name = "PixelJumpCircle"
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanQuery = false
+        p.CanTouch = false
+        p.Size = Vector3.new(3.5, 0.05, 3.5)
+        p.CFrame = CFrame.new(ground)
+        p.Transparency = 1
+        p.Parent = Workspace
+        UnloadSystem:TrackInstance(p)
+        local tex = Instance.new("Texture")
+        tex.Texture = img
+        tex.Face = Enum.NormalId.Top
+        tex.StudsPerTileU = 3.5
+        tex.StudsPerTileV = 3.5
+        tex.Transparency = 0.05
+        tex.Parent = p
+        local tex2 = tex:Clone()
+        tex2.Face = Enum.NormalId.Bottom
+        tex2.Parent = p
+        local t0 = tick()
+        local conn
+        conn = RunService.Heartbeat:Connect(function()
+            local a = (tick() - t0) / 0.85
+            if a >= 1 or not p.Parent then
+                if conn then conn:Disconnect() end
+                pcall(function() p:Destroy() end)
+                return
+            end
+            local sc = 3.5 + a * 5.5
+            p.Size = Vector3.new(sc, 0.05, sc)
+            tex.StudsPerTileU = sc
+            tex.StudsPerTileV = sc
+            tex2.StudsPerTileU = sc
+            tex2.StudsPerTileV = sc
+            tex.Transparency = 0.05 + a * 0.95
+            tex2.Transparency = tex.Transparency
+        end)
+        UnloadSystem:TrackConnection(conn)
+    end)
+end
+
+local function bindJumpCircles(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum then return end
+    UnloadSystem:TrackConnection(hum.Jumping:Connect(function(active)
+        if active then
+            local r = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if r then spawnJumpCircle(r.Position) end
+        end
+    end))
+end
+if LocalPlayer.Character then task.defer(function() bindJumpCircles(LocalPlayer.Character) end) end
+UnloadSystem:TrackConnection(LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(0.25)
+    bindJumpCircles(char)
+end))
+
+-- ===== Falling Stars / Rain Particles (Cosmetics) =====
+local StarRainState = { folder = nil, emitters = {}, conn = nil, style = 0 }
+
+local STAR_STYLES = {
+    [1] = { name = "White",  c1 = Color3.fromRGB(255,255,255), c2 = Color3.fromRGB(220,230,255) },
+    [2] = { name = "Gold",   c1 = Color3.fromRGB(255,220,80),  c2 = Color3.fromRGB(255,150,40) },
+    [3] = { name = "Sakura", c1 = Color3.fromRGB(255,180,210), c2 = Color3.fromRGB(255,120,180) },
+    [4] = { name = "Rainbow", rainbow = true },
+    [5] = { name = "Cyan",   c1 = Color3.fromRGB(120,240,255), c2 = Color3.fromRGB(50,160,255) },
+    [6] = { name = "Red",    c1 = Color3.fromRGB(255,90,90),   c2 = Color3.fromRGB(180,20,50) },
+}
+
+local function destroyStarRain()
+    if StarRainState.conn then pcall(function() StarRainState.conn:Disconnect() end) StarRainState.conn = nil end
+    if StarRainState.folder then pcall(function() StarRainState.folder:Destroy() end) end
+    StarRainState.folder = nil
+    StarRainState.emitters = {}
+    StarRainState.style = 0
+end
+
+local function makeEmitter(parent, texture, rateMul)
+    local em = Instance.new("ParticleEmitter")
+    em.Texture = texture
+    em.EmissionDirection = Enum.NormalId.Bottom
+    em.Enabled = true
+    em.LockedToPart = false
+    em.Parent = parent
+    em:SetAttribute("RateMul", rateMul or 1)
+    return em
+end
+
+local function styleEmitter(em)
+    if not em then return end
+    local style = tonumber(Settings.StarRainStyle) or 1
+    local st = STAR_STYLES[style] or STAR_STYLES[1]
+    local sz = tonumber(Settings.StarRainSize) or 1
+    local spd = tonumber(Settings.StarRainSpeed) or 28
+    local rate = math.clamp(tonumber(Settings.StarRainRate) or 45, 5, 200)
+    local mul = em:GetAttribute("RateMul") or 1
+
+    if st.rainbow then
+        em.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 90, 130)),
+            ColorSequenceKeypoint.new(0.25, Color3.fromRGB(255, 210, 60)),
+            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(80, 255, 150)),
+            ColorSequenceKeypoint.new(0.75, Color3.fromRGB(90, 180, 255)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(200, 110, 255)),
+        })
+    else
+        em.Color = ColorSequence.new(st.c1, st.c2)
+    end
+
+    em.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.45 * sz),
+        NumberSequenceKeypoint.new(0.55, 0.25 * sz),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    em.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.05),
+        NumberSequenceKeypoint.new(0.75, 0.25),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    em.Rate = rate * mul
+    em.Speed = NumberRange.new(spd * 0.55, spd * 1.25)
+    em.Lifetime = NumberRange.new(1.0, 2.2)
+    em.Rotation = NumberRange.new(0, 360)
+    em.RotSpeed = NumberRange.new(-60, 60)
+    em.SpreadAngle = Vector2.new(18, 18)
+    em.Acceleration = Vector3.new(0, -math.clamp(spd * 0.9, 8, 70), 0)
+    em.Drag = 0.35
+    em.LightEmission = 0.9
+    em.LightInfluence = 0.1
+    em.Brightness = 1.2
+end
+
+local function ensureStarRain()
+    if not Settings.StarRain then
+        destroyStarRain()
+        return
+    end
+    if StarRainState.folder and StarRainState.folder.Parent and #StarRainState.emitters > 0 then
+        for _, em in ipairs(StarRainState.emitters) do styleEmitter(em) end
+        StarRainState.style = tonumber(Settings.StarRainStyle) or 1
+        return
+    end
+    destroyStarRain()
+
+    local folder = Instance.new("Folder")
+    folder.Name = "PixelStarRain"
+    folder.Parent = Workspace
+    UnloadSystem:TrackInstance(folder)
+
+    local host = Instance.new("Part")
+    host.Name = "StarRainHost"
+    host.Anchored = true
+    host.CanCollide = false
+    host.CanQuery = false
+    host.CanTouch = false
+    host.Transparency = 1
+    host.Size = Vector3.new(80, 1, 80)
+    host.Parent = folder
+
+    local att = Instance.new("Attachment", host)
+    -- main stars + soft dust layer
+    local e1 = makeEmitter(att, "rbxassetid://241650934", 1.0)
+    local e2 = makeEmitter(att, "rbxassetid://241650934", 0.35)
+    e2.Size = NumberSequence.new(0.15, 0)
+    StarRainState.folder = folder
+    StarRainState.emitters = { e1, e2 }
+    for _, em in ipairs(StarRainState.emitters) do styleEmitter(em) end
+
+    StarRainState.conn = RunService.Heartbeat:Connect(function()
+        if not Settings.StarRain then destroyStarRain() return end
+        if not host.Parent then return end
+        local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local cam = Workspace.CurrentCamera
+        local base = root and root.Position or (cam and cam.CFrame.Position) or Vector3.zero
+        local spread = math.clamp(tonumber(Settings.StarRainSpread) or 90, 20, 220)
+        host.Size = Vector3.new(spread, 1, spread)
+        host.CFrame = CFrame.new(base + Vector3.new(0, 38, 0))
+        local st = tonumber(Settings.StarRainStyle) or 1
+        if StarRainState.style ~= st then
+            for _, em in ipairs(StarRainState.emitters) do styleEmitter(em) end
+            StarRainState.style = st
+        end
+    end)
+    UnloadSystem:TrackConnection(StarRainState.conn)
+end
+
+_G.PixelStarRainRefresh = function()
+    ensureStarRain()
+end
+
+task.spawn(function()
+    while UnloadSystem.Active do
+        if Settings.StarRain then ensureStarRain()
+        elseif StarRainState.folder then destroyStarRain() end
+        task.wait(0.6)
+    end
+end)
+
 
 local KillstreakManager = {
     CurrentStreak = 0,
@@ -1419,8 +1746,8 @@ local function LoadConfig()
         currentPlayingIndex = Settings.LastTrackIndex or 0
         currentKillSoundIndex = Settings.LastKillSoundIndex or 1
         
-        backgroundSound.Volume = currentVolume
-        backgroundSound.Looped = isLooped
+        backgroundSound.Volume = 0
+        backgroundSound.Looped = false
         for _, s in ipairs(killSoundPool) do s.Volume = killSoundVolume end
     end
 end
@@ -2161,25 +2488,133 @@ local function DesyncStop()
     if cam then cam.CameraType = Enum.CameraType.Custom end
 end
 
-local function DesyncStart() -- removed
-    -- INVIS/DESYNC REMOVED
-    Settings.Desync = false
-    return false
+local function DesyncStart()
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return false end
+    DesyncStop()
+
+    char.Archivable = true
+    local clone = char:Clone()
+    clone.Name = "PC_DesyncClone"
+    clone.Parent = Workspace
+    for _, v in pairs(clone:GetDescendants()) do
+        if v:IsA("Script") or v:IsA("LocalScript") or v:IsA("Animator") then
+            -- keep Animator on clone humanoid; strip scripts
+            if v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
+        end
+        if v:IsA("ForceField") then v:Destroy() end
+    end
+    -- clone collidable / visible
+    for _, p in pairs(clone:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.CanCollide = (p.Name == "HumanoidRootPart") and false or true
+            p.Anchored = false
+            p.LocalTransparencyModifier = 0
+        end
+    end
+    local cHum = clone:FindFirstChildOfClass("Humanoid")
+    if cHum then
+        cHum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        pcall(function() cHum:ChangeState(Enum.HumanoidStateType.Running) end)
+    end
+    clone.HumanoidRootPart.CFrame = char.HumanoidRootPart.CFrame
+    -- hide real character locally
+    for _, p in pairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.LocalTransparencyModifier = 1
+            p.CanCollide = false
+        elseif p:IsA("Decal") then
+            p.Transparency = 1
+        end
+    end
+
+    local charHum = char:FindFirstChildOfClass("Humanoid")
+    local cloneHum = clone:FindFirstChildOfClass("Humanoid")
+    if charHum and cloneHum then
+        cloneHum.WalkSpeed = charHum.WalkSpeed
+        cloneHum.JumpPower = charHum.JumpPower
+        cloneHum.JumpHeight = charHum.JumpHeight
+        table.insert(DesyncState.statConns, charHum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if cloneHum and cloneHum.Parent then cloneHum.WalkSpeed = charHum.WalkSpeed end
+        end))
+        table.insert(DesyncState.statConns, charHum:GetPropertyChangedSignal("JumpPower"):Connect(function()
+            if cloneHum and cloneHum.Parent then cloneHum.JumpPower = charHum.JumpPower end
+        end))
+        table.insert(DesyncState.statConns, charHum:GetPropertyChangedSignal("JumpHeight"):Connect(function()
+            if cloneHum and cloneHum.Parent then cloneHum.JumpHeight = charHum.JumpHeight end
+        end))
+    end
+
+    for _, part in pairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+            part.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+        end
+    end
+    table.insert(DesyncState.collConns, char.DescendantAdded:Connect(function(part)
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+            part.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+        end
+    end))
+
+    for _, part in pairs(clone:GetDescendants()) do
+        if part:IsA("BasePart") then part.CanCollide = true end
+    end
+
+    local floor = Instance.new("Part")
+    floor.Size = Vector3.new(10, 1, 10)
+    floor.Anchored = true
+    floor.CanCollide = true
+    floor.Transparency = 1
+    floor.Parent = Workspace
+    UnloadSystem:TrackInstance(floor)
+
+    DesyncState.motorPairs = {}
+    for _, motor in pairs(char:GetDescendants()) do
+        if motor:IsA("Motor6D") then
+            local cm = clone:FindFirstChild(motor.Name, true)
+            if cm and cm:IsA("Motor6D") then
+                table.insert(DesyncState.motorPairs, {Real = motor, Clone = cm})
+            end
+        end
+    end
+
+    DesyncState.clone = clone
+    DesyncState.floor = floor
+    DesyncState.active = true
+    DesyncState.touchLookId = nil
+    DesyncState.isMobile = UserInputService.TouchEnabled
+    -- стартовые углы камеры (удобно на телефоне)
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local look = cam.CFrame.LookVector
+            DesyncState.camAngX = math.atan2(-look.X, -look.Z)
+            DesyncState.camAngY = math.asin(math.clamp(look.Y, -1, 1))
+        end
+    end)
+    UnloadSystem:TrackInstance(clone)
+    return true
 end
 
--- Desync/Invis removed — always off
+-- Desync toggle hook
 task.defer(function()
-    Settings.Desync = false
-    Settings.AnimInvis = false
-    pcall(DesyncStop)
-    pcall(stopAnimInvis)
+    local old = UI_Toggles["Desync"]
     UI_Toggles["Desync"] = function()
-        Settings.Desync = false
-        pcall(DesyncStop)
-    end
-    UI_Toggles["AnimInvis"] = function()
-        Settings.AnimInvis = false
-        pcall(stopAnimInvis)
+        if old then old() end
+        if Settings.Desync then
+            if DesyncStart() then
+                PushMessage("Desync", "ON — клон активен", 2)
+            else
+                Settings.Desync = false
+                if old then old() end
+                PushMessage("Desync", "Нет персонажа", 2)
+            end
+        else
+            DesyncStop()
+            PushMessage("Desync", "OFF", 2)
+        end
     end
 end)
 
@@ -2277,7 +2712,7 @@ UnloadSystem:TrackConnection(RunService.Stepped:Connect(function()
         if flatLook.Magnitude > 0 then flatLook = flatLook.Unit end
         if flatRight.Magnitude > 0 then flatRight = flatRight.Unit end
 
-        local autoMove = Settings.ChainFarm or Settings.AutoFarm or Settings.AutoFarmTarget or Settings.AutoFarmLowHP or Settings.AutoFarmTroll or Settings.TargetStrafe
+        local autoMove = Settings.TargetStrafe -- farm removed
         if not autoMove then
             local moveDir = Vector3.zero
             if DesyncState.keys.W or UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir += flatLook end
@@ -2362,7 +2797,7 @@ end))
 UnloadSystem:TrackConnection(LocalPlayer.CharacterAdded:Connect(function()
     if Settings.Desync then
         task.wait(1)
-        DesyncStart() -- removed
+        DesyncStart()
     end
 end))
 
@@ -3029,8 +3464,8 @@ if IS_MOBILE then
     mainFrame.Size = UDim2.new(0, w, 0, h)
     mainFrame.Position = UDim2.new(0.5, -math.floor(w / 2), 0.5, -math.floor(h / 2))
 else
-    mainFrame.Size = UDim2.new(0, 620, 0, 370)
-    mainFrame.Position = UDim2.new(0.5, -310, 0.5, -185)
+    mainFrame.Size = UDim2.new(0, 720, 0, 440)
+    mainFrame.Position = UDim2.new(0.5, -400, 0.5, -240)
 end
 mainFrame.BackgroundColor3 = COLOR_WINDOW_BG
 mainFrame.BorderSizePixel = 0
@@ -3064,12 +3499,14 @@ mainFrame.Parent = ScreenGui
     UnloadSystem:TrackInstance(wallpaper)
 
     local lastWallUrl = nil
-    local function applyWallpaper()
+    local lastWallAsset = nil
+    local function applyWallpaper(force)
         local url = tostring(Settings.WallpaperUrl or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if url == "" then
             wallpaper.Image = ""
             wallpaper.Visible = false
             lastWallUrl = ""
+            lastWallAsset = nil
             mainFrame.BackgroundTransparency = 0
             pcall(function()
                 local ca = mainFrame:FindFirstChild("ContentArea") or contentArea
@@ -3077,14 +3514,22 @@ mainFrame.Parent = ScreenGui
             end)
             return false
         end
+        if not force and url == lastWallUrl and lastWallAsset and wallpaper.Image == lastWallAsset then
+            return true
+        end
+        -- сброс перед сменой (иначе ImageLabel иногда не обновляет текстуру)
+        wallpaper.Image = ""
+        wallpaper.Visible = false
+        task.wait() -- один кадр
         local asset = resolveImageForGui(url)
         if asset and asset ~= "" then
+            -- если тот же asset-строка от кэша но другая картинка — добавим cache-bust на Image не работает;
+            -- разные url должны давать разные файлы в resolveImageForGui
             wallpaper.Image = asset
-            wallpaper.ImageTransparency = 0.15
+            wallpaper.ImageTransparency = 0.12
             wallpaper.Visible = true
             wallpaper.ZIndex = 0
             wallClip.Visible = true
-            -- чтобы картинка была видна под панелями
             mainFrame.BackgroundTransparency = 0.55
             pcall(function()
                 if contentArea then
@@ -3092,7 +3537,8 @@ mainFrame.Parent = ScreenGui
                 end
             end)
             lastWallUrl = url
-            print("[PixelClient] Wallpaper OK:", asset:sub(1, 60))
+            lastWallAsset = asset
+            print("[PixelClient] Wallpaper OK:", url:sub(1, 40), "->", tostring(asset):sub(1, 50))
             return true
         end
         wallpaper.Image = ""
@@ -3100,7 +3546,9 @@ mainFrame.Parent = ScreenGui
         warn("[PixelClient] Wallpaper FAIL: " .. url)
         return false
     end
-    _G.PixelApplyWallpaper = applyWallpaper
+    _G.PixelApplyWallpaper = function()
+        return applyWallpaper(true)
+    end
     task.spawn(function()
         task.wait(0.3)
         applyWallpaper()
@@ -3230,8 +3678,8 @@ addPadding(contentArea, 12, 12, 12, 12)
 
 local isMenuOpen = true
 local isTweening = false
-local MENU_SIZE = UDim2.new(0, 620, 0, 370)
-local MENU_POS = UDim2.new(0.5, -310, 0.5, -185)
+local MENU_SIZE = UDim2.new(0, 720, 0, 440)
+local MENU_POS = UDim2.new(0.5, -400, 0.5, -240)
 local mainScale = mainFrame:FindFirstChild("MenuScale")
 if not mainScale then
     mainScale = Instance.new("UIScale")
@@ -3249,7 +3697,7 @@ local function toggleMenu()
     if isMenuOpen then
         TweenService:Create(mainScale, tiIn, { Scale = 0.84 }):Play()
         TweenService:Create(mainFrame, tiIn, {
-            Position = UDim2.new(0.5, -310, 0.5, -205),
+            Position = UDim2.new(0.5, -400, 0.5, -270),
             BackgroundTransparency = 0.4,
         }):Play()
         task.delay(0.2, function()
@@ -3269,7 +3717,7 @@ local function toggleMenu()
     else
         mainFrame.Visible = true
         mainFrame.Size = MENU_SIZE
-        mainFrame.Position = UDim2.new(0.5, -310, 0.5, -160)
+        mainFrame.Position = UDim2.new(0.5, -400, 0.5, -210)
         mainFrame.BackgroundTransparency = 0.45
         mainScale.Scale = 0.88
         TweenService:Create(mainScale, tiOut, { Scale = 1 }):Play()
@@ -3333,7 +3781,7 @@ local CombatTab, CombatContainer = createTabContainer("Combat")
 local MovementTab, MovementContainer = createTabContainer("Movement")
 local VisualsTab, VisualsContainer = createTabContainer("Visuals")
 -- shared Visuals sub-pages (fill later; used by FillTabs + FillVisuals)
-local VisSubBar, VisESP, VisHUD, VisCosmetics, VisFX, VisShaders
+local VisSubBar, VisESP, VisHUD, VisCosmetics, VisGUI, VisSound, VisFX, VisShaders
 local VisPages = {}
 local selectVisPage
 
@@ -3372,10 +3820,19 @@ local CombatTabBtn = createTabBtn("Combat")
 local MovementTabBtn = createTabBtn("Movement")
 local VisualsTabBtn = createTabBtn("Visuals")
 local TrollingTabBtn = createTabBtn("Trolling")
+TrollingTabBtn.Visible = false
+TrollingTab.Visible = false
 local ExtraTabBtn = createTabBtn("Extra")
 local AnimTabBtn = createTabBtn("Anims")
 local MusicTabBtn = createTabBtn("Music")
 local KillSoundTabBtn = createTabBtn("KillSound")
+MusicTabBtn.Visible = false
+KillSoundTabBtn.Visible = false
+MusicTab.Visible = false
+KillSoundTab.Visible = false
+
+local ContactsTab, ContactsContainer = createTabContainer("Contacts")
+local ContactsTabBtn = createTabBtn("Contacts")
 
 local HelpTab, HelpContainer = createTabContainer("Help")
 local HelpTabBtn = createTabBtn("Help")
@@ -3384,13 +3841,89 @@ local allTabs = {
     {Btn = CombatTabBtn, Tab = CombatTab},
     {Btn = MovementTabBtn, Tab = MovementTab},
     {Btn = VisualsTabBtn, Tab = VisualsTab},
-    {Btn = TrollingTabBtn, Tab = TrollingTab},
     {Btn = ExtraTabBtn, Tab = ExtraTab},
     {Btn = AnimTabBtn, Tab = AnimTab},
-    {Btn = MusicTabBtn, Tab = MusicTab},
-    {Btn = KillSoundTabBtn, Tab = KillSoundTab},
+    {Btn = ContactsTabBtn, Tab = ContactsTab},
     {Btn = HelpTabBtn, Tab = HelpTab},
 }
+
+-- Contacts page
+do
+    local title = Instance.new("TextLabel", ContactsContainer)
+    title.Size = UDim2.new(1, -8, 0, 26)
+    title.BackgroundTransparency = 1
+    title.Text = "Pixel Client"
+    title.TextColor3 = COLOR_TITLE
+    title.Font = BOLD_FONT
+    title.TextSize = 16
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local info = Instance.new("TextLabel", ContactsContainer)
+    info.Size = UDim2.new(1, -8, 0, 40)
+    info.BackgroundTransparency = 1
+    info.Text = "Официальный сайт / поддержка"
+    info.TextColor3 = COLOR_TEXT_MUTED
+    info.Font = MAIN_FONT
+    info.TextSize = 12
+    info.TextXAlignment = Enum.TextXAlignment.Left
+
+    local siteBtn = Instance.new("TextButton", ContactsContainer)
+    siteBtn.Size = UDim2.new(1, -8, 0, 40)
+    siteBtn.BackgroundColor3 = COLOR_ACCENT
+    siteBtn.Text = "Open Website"
+    siteBtn.TextColor3 = Color3.new(1, 1, 1)
+    siteBtn.Font = BOLD_FONT
+    siteBtn.TextSize = 14
+    addCorner(siteBtn, 10)
+
+    local urlBox = Instance.new("TextBox", ContactsContainer)
+    urlBox.Size = UDim2.new(1, -8, 0, 32)
+    urlBox.BackgroundColor3 = COLOR_SIDEBAR
+    urlBox.Text = "https://pixelclient.apps.bot-hosting.cloud"
+    urlBox.TextColor3 = COLOR_TEXT
+    urlBox.Font = MAIN_FONT
+    urlBox.TextSize = 12
+    urlBox.ClearTextOnFocus = false
+    urlBox.TextEditable = false
+    addCorner(urlBox, 8)
+
+    local SITE_URL = "https://pixelclient.apps.bot-hosting.cloud"
+    siteBtn.MouseButton1Click:Connect(function()
+        local opened = false
+        pcall(function()
+            if setclipboard then setclipboard(SITE_URL) opened = true end
+        end)
+        pcall(function()
+            if toclipboard then toclipboard(SITE_URL) opened = true end
+        end)
+        -- некоторые клиенты
+        pcall(function()
+            if request then
+                request({ Url = SITE_URL, Method = "GET" })
+            end
+        end)
+        if PushMessage then
+            PushMessage("Contacts", opened and "Ссылка скопирована" or SITE_URL, 3)
+        end
+        print("[PixelClient] Site:", SITE_URL)
+    end)
+
+    local copyBtn = Instance.new("TextButton", ContactsContainer)
+    copyBtn.Size = UDim2.new(1, -8, 0, 34)
+    copyBtn.BackgroundColor3 = COLOR_CARD_BG
+    copyBtn.Text = "Copy link"
+    copyBtn.TextColor3 = COLOR_TEXT
+    copyBtn.Font = BOLD_FONT
+    copyBtn.TextSize = 13
+    addCorner(copyBtn, 8)
+    copyBtn.MouseButton1Click:Connect(function()
+        pcall(function()
+            if setclipboard then setclipboard(SITE_URL)
+            elseif toclipboard then toclipboard(SITE_URL) end
+        end)
+        if PushMessage then PushMessage("Contacts", "Copied", 2) end
+    end)
+end
 
 -- Help / обучение
 do
@@ -3415,9 +3948,9 @@ do
     body.TextYAlignment = Enum.TextYAlignment.Top
     body.Text = table.concat({
         "1) Combat → Аим (Range). Movement → Fake Lag. Visuals/ESP → Backtrack. Высота max 20.",
-        "2) Movement → Walk Speed / Fly. Invis, Desync, Sprint убраны.",
+        "2) Movement → Walk Speed / Fly. Sprint, Desync, Zero-Ping убраны.",
         "3) Anti-Fling: глушит флинг рядом. Детектор софтов убран.",
-        "4) Trolling: Fling, Stand, Target Skill Chat.",
+        "4) Contacts → сайт Pixel Client.",
         "5) Visuals: ESP/HUD. Skill HUD и Killstreak убраны.",
         "6) Anims: только обычные эмоции, без боевых.",
         "7) Online: кто с клиентом — только API, чат не слушается.",
@@ -4114,8 +4647,8 @@ local function startBodyEmission()
 end
 
 
--- Invis REMOVED
-local INVIS_ANIM_ID = "0"
+-- Invis: анимация как forceJerkAnim (Humanoid:LoadAnimation + принудительный Play каждый кадр)
+local INVIS_ANIM_ID = "128418097837186"
 local invisAnimTrack = nil
 local invisAnimConn = nil
 local invisCharConn = nil
@@ -4136,9 +4669,82 @@ local function stopAnimInvis()
 end
 
 local function startAnimInvis()
-    -- INVIS REMOVED
     Settings.AnimInvis = false
     stopAnimInvis()
+    do return end
+    Settings.AnimInvis = true
+
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        if PushMessage then PushMessage("Invis", "Нет персонажа / Humanoid", 2) end
+        return
+    end
+
+    -- как jerk: без лишних pcall на Load
+    local anim = Instance.new("Animation")
+    anim.AnimationId = "rbxassetid://" .. INVIS_ANIM_ID
+
+    local track
+    local ok, err = pcall(function()
+        track = humanoid:LoadAnimation(anim)
+    end)
+    if not ok or not track then
+        -- fallback Animator
+        local animator = humanoid:FindFirstChildOfClass("Animator")
+        if not animator then
+            animator = Instance.new("Animator")
+            animator.Parent = humanoid
+        end
+        ok, err = pcall(function()
+            track = animator:LoadAnimation(anim)
+        end)
+    end
+    if not track then
+        if PushMessage then
+            PushMessage("Invis", "LoadAnimation FAIL: " .. tostring(err), 3)
+        end
+        warn("[PixelClient] Invis LoadAnimation fail", err)
+        return
+    end
+
+    track.Priority = Enum.AnimationPriority.Action4
+    track.Looped = true
+    invisAnimTrack = track
+
+    -- первый play сразу
+    track:Play()
+    pcall(function() track:AdjustSpeed(1) end)
+    pcall(function() track:AdjustWeight(1) end)
+
+    if PushMessage then
+        PushMessage("Invis", "Anim Play IsPlaying=" .. tostring(track.IsPlaying), 2)
+    end
+    print("[PixelClient] Invis track", track, "playing", track.IsPlaying, "len", track.Length)
+
+    -- каждый кадр как у jerk — если сорвалась, Play снова
+    invisAnimConn = RunService.RenderStepped:Connect(function()
+        if not Settings.AnimInvis then
+            pcall(function() if track then track:Stop() end end)
+            return
+        end
+        if not track then return end
+        if not track.IsPlaying then
+            pcall(function()
+                track:Play()
+                track:AdjustSpeed(1)
+            end)
+        end
+    end)
+    UnloadSystem:TrackConnection(invisAnimConn)
+
+    invisCharConn = LocalPlayer.CharacterAdded:Connect(function()
+        if Settings.AnimInvis then
+            task.wait(0.8)
+            startAnimInvis()
+        end
+    end)
+    UnloadSystem:TrackConnection(invisCharConn)
 end
 
 local function FillTabsCombatMovement()
@@ -4269,7 +4875,7 @@ createToggle(MovementContainer, "Fake Lag", "FakeLag", nil, function(body)
     hint.TextWrapped = true
     hint.TextXAlignment = Enum.TextXAlignment.Left
 end)
--- Invis (Anim) REMOVED
+-- Invis REMOVED
 -- REMOVED createToggle(MovementContainer, "Desync (Invis Clone)", "Desync")
 -- REMOVED createToggle(MovementContainer, "Zero-Ping Speed (local)", "SpeedZeroPing", nil, function(body)
 -- REMOVED     createStepper(body, "Speed Boost",
@@ -4279,14 +4885,7 @@ end)
 -- REMOVED     )
 -- REMOVED end)
 
-local farmTargetLbl = Instance.new("TextLabel", CombatContainer)
-farmTargetLbl.Size = UDim2.new(1, -6, 0, 20)
-farmTargetLbl.BackgroundTransparency = 1
-farmTargetLbl.Text = "Farm target: " .. (Settings.FarmTargetName ~= "" and Settings.FarmTargetName or "не выбран (из Trolling)")
-farmTargetLbl.TextColor3 = COLOR_TITLE
-farmTargetLbl.Font = BOLD_FONT
-farmTargetLbl.TextSize = 12
-farmTargetLbl.TextXAlignment = Enum.TextXAlignment.Left
+local farmTargetLbl = nil -- farm removed
 
 -- ВКЛАДКА ТРОЛЛИНГ — мульти-выбор (SelectedFlingTargets = outer shared)
 
@@ -4492,6 +5091,8 @@ end
 VisESP = makeVisPage("ESP")
 VisHUD = makeVisPage("HUD")
 VisCosmetics = makeVisPage("Cosmetics")
+VisGUI = makeVisPage("GUI")
+VisSound = makeVisPage("Sound")
 VisFX = makeVisPage("FX")
 VisShaders = makeVisPage("Shaders")
 VisESP.Visible = true
@@ -4526,7 +5127,7 @@ selectVisPage = function(name)
     end
 end
 
-for i, name in ipairs({"ESP", "HUD", "Cosmetics", "FX", "Shaders"}) do
+for i, name in ipairs({"ESP", "Cosmetics", "GUI", "Sound", "FX", "Shaders"}) do
     local b = Instance.new("TextButton", VisSubBar)
     b.Name = "VisBtn_" .. name
     b.Size = UDim2.new(0, 70, 1, 0)
@@ -4542,17 +5143,27 @@ for i, name in ipairs({"ESP", "HUD", "Cosmetics", "FX", "Shaders"}) do
     b.MouseButton1Click:Connect(function() selectVisPage(nm) end)
 end
 
-createToggle(VisHUD, "Target HUD", "TargetHUD")
-createToggle(VisHUD, "Music HUD", "MusicHUD")
--- REMOVED -- REMOVED Killstreak HUD
--- REMOVED -- REMOVED Skill HUD
-createToggle(VisHUD, "Keybind HUD", "KeybindHUD")
-createToggle(VisHUD, "Message HUD", "MessageHUD")
--- Quick Bar только на телефоне — на ПК тогла нет
-if PLATFORM.IsMobile or UserInputService.TouchEnabled then
-    createToggle(VisHUD, "Quick Bar (Mobile)", "QuickBar")
-end
+-- HUD controls moved to VisFX
 createToggle(VisFX, "Jerk Off Mode", "JerkOff")
+
+do
+    local hudTitle = Instance.new("TextLabel", VisFX)
+    hudTitle.Size = UDim2.new(1, -8, 0, 22)
+    hudTitle.BackgroundTransparency = 1
+    hudTitle.Text = "HUD"
+    hudTitle.TextColor3 = COLOR_TITLE
+    hudTitle.Font = BOLD_FONT
+    hudTitle.TextSize = 14
+    hudTitle.TextXAlignment = Enum.TextXAlignment.Left
+end
+createToggle(VisFX, "Target HUD", "TargetHUD")
+createToggle(VisFX, "Watermark", "Watermark")
+createToggle(VisFX, "Keybind HUD", "KeybindHUD")
+createToggle(VisFX, "Message HUD", "MessageHUD")
+-- Music HUD REMOVED
+if PLATFORM.IsMobile or UserInputService.TouchEnabled then
+    createToggle(VisFX, "Quick Bar (Mobile)", "QuickBar")
+end
 
 createToggle(VisFX, "Resolution Stretch", "ResolutionEnabled")
 createStepper(VisFX, "Stretch Ratio",
@@ -5109,37 +5720,325 @@ createExpandable(VisShaders, "Shaders / Post-FX", function(body)
     end)
 end)
 
-createExpandable(VisFX, "Combat FX (Hit / Kill / Death)", function(body)
-    createToggle(body, "Kill Effect", "KillEffect")
-    createToggle(body, "Death Effect", "DeathEffect")
-    createToggle(body, "Hitmarker ✕", "HitmarkerFX")
-    createToggle(body, "Hit Impact (ring + sparks)", "HitImpactFX")
-    createToggle(body, "Hit Slash", "HitSlashFX")
-    createToggle(body, "Hit Pixels (пиксели)", "HitPixels")
-    createToggle(body, "Hit Sound (ston)", "HitSound", nil, function(s)
-        createStepper(s, "Volume",
-            function() return string.format("%.0f%%", (Settings.HitSoundVolume or 0.7) * 100) end,
-            function() Settings.HitSoundVolume = math.clamp((Settings.HitSoundVolume or 0.7) - 0.1, 0, 1) end,
-            function() Settings.HitSoundVolume = math.clamp((Settings.HitSoundVolume or 0.7) + 0.1, 0, 1) end)
-        createButton("Test Hit Sound", s, function()
-            pcall(PlayHitSound)
+-- Combat FX REMOVED
+
+-- Cosmetics / GUI / Sound pages
+do
+    local t = Instance.new("TextLabel", VisCosmetics)
+    t.Size = UDim2.new(1, -8, 0, 22)
+    t.BackgroundTransparency = 1
+    t.Text = "Cosmetics"
+    t.TextColor3 = COLOR_TITLE
+    t.Font = BOLD_FONT
+    t.TextSize = 14
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    createToggle(VisCosmetics, "Jump Circles", "JumpCircles")
+
+    createExpandable(VisCosmetics, "Star Rain (Falling Stars)", function(body)
+        createToggle(body, "Enabled", "StarRain", function()
+            if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+        end)
+        createStepper(body, "Style",
+            function()
+                local st = STAR_STYLES[Settings.StarRainStyle or 1]
+                return string.format("%d %s", Settings.StarRainStyle or 1, st and st.name or "?")
+            end,
+            function()
+                Settings.StarRainStyle = ((Settings.StarRainStyle or 1) - 2) % 6 + 1
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end,
+            function()
+                Settings.StarRainStyle = (Settings.StarRainStyle or 1) % 6 + 1
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end
+        )
+        createStepper(body, "Rate",
+            function() return tostring(Settings.StarRainRate or 45) end,
+            function()
+                Settings.StarRainRate = math.clamp((Settings.StarRainRate or 45) - 5, 5, 200)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end,
+            function()
+                Settings.StarRainRate = math.clamp((Settings.StarRainRate or 45) + 5, 5, 200)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end
+        )
+        createStepper(body, "Speed",
+            function() return tostring(Settings.StarRainSpeed or 28) end,
+            function()
+                Settings.StarRainSpeed = math.clamp((Settings.StarRainSpeed or 28) - 3, 5, 80)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end,
+            function()
+                Settings.StarRainSpeed = math.clamp((Settings.StarRainSpeed or 28) + 3, 5, 80)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end
+        )
+        createStepper(body, "Size",
+            function() return string.format("%.1f", Settings.StarRainSize or 1) end,
+            function()
+                Settings.StarRainSize = math.clamp(math.round(((Settings.StarRainSize or 1) - 0.1) * 10) / 10, 0.3, 3)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end,
+            function()
+                Settings.StarRainSize = math.clamp(math.round(((Settings.StarRainSize or 1) + 0.1) * 10) / 10, 0.3, 3)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end
+        )
+        createStepper(body, "Spread",
+            function() return tostring(Settings.StarRainSpread or 90) end,
+            function()
+                Settings.StarRainSpread = math.clamp((Settings.StarRainSpread or 90) - 10, 20, 220)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end,
+            function()
+                Settings.StarRainSpread = math.clamp((Settings.StarRainSpread or 90) + 10, 20, 220)
+                if _G.PixelStarRainRefresh then _G.PixelStarRainRefresh() end
+            end
+        )
+    end)
+end
+do
+    local t = Instance.new("TextLabel", VisGUI)
+    t.Size = UDim2.new(1, -8, 0, 22)
+    t.BackgroundTransparency = 1
+    t.Text = "GUI / Wallpaper"
+    t.TextColor3 = COLOR_TITLE
+    t.Font = BOLD_FONT
+    t.TextSize = 14
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    local wallBox = Instance.new("TextBox", VisGUI)
+    wallBox.Size = UDim2.new(1, -8, 0, 32)
+    wallBox.BackgroundColor3 = COLOR_SIDEBAR
+    wallBox.PlaceholderText = "Wallpaper URL / rbxassetid"
+    wallBox.Text = tostring(Settings.WallpaperUrl or "")
+    wallBox.TextColor3 = COLOR_TEXT
+    wallBox.Font = MAIN_FONT
+    wallBox.TextSize = 12
+    wallBox.ClearTextOnFocus = false
+    addCorner(wallBox, 8)
+    createButton("Применить обои", VisGUI, function()
+        Settings.WallpaperUrl = tostring(wallBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        task.spawn(function()
+            if _G.PixelApplyWallpaper then
+                local ok = _G.PixelApplyWallpaper()
+                if PushMessage then PushMessage("Wallpaper", ok and "OK" or "fail", 2) end
+            end
         end)
     end)
-    createToggle(body, "Damage Numbers", "HitNumbers")
-    createToggle(body, "Screen Shake on Hit", "HitScreenShake")
-end)
+    createButton("Сбросить обои", VisGUI, function()
+        wallBox.Text = ""
+        Settings.WallpaperUrl = ""
+        if _G.PixelApplyWallpaper then pcall(_G.PixelApplyWallpaper) end
+    end)
 
--- Cosmetics UI removed
+    local presetTitle = Instance.new("TextLabel", VisGUI)
+    presetTitle.Size = UDim2.new(1, -8, 0, 20)
+    presetTitle.BackgroundTransparency = 1
+    presetTitle.Text = "Built-in Wallpapers"
+    presetTitle.TextColor3 = COLOR_TITLE
+    presetTitle.Font = BOLD_FONT
+    presetTitle.TextSize = 13
+    presetTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local BUILTIN_WALLS = {
+        { name = "Wallpaper 1", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g1.jpg" },
+        { name = "Wallpaper 2", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g2.jpg" },
+        { name = "Wallpaper 3", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g3.jpg" },
+        { name = "Wallpaper 4", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g4.jpg" },
+        { name = "Wallpaper 5", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g5.jpg" },
+        { name = "Wallpaper 6", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g6.jpg" },
+        { name = "Wallpaper 7", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g7.jpg" },
+        { name = "Wallpaper 8", url = "https://raw.githubusercontent.com/ggn93360-creator/pixel_client/main/gui/g8.jpg" },
+    }
+
+    local grid = Instance.new("Frame", VisGUI)
+    grid.Size = UDim2.new(1, -8, 0, 0)
+    grid.AutomaticSize = Enum.AutomaticSize.Y
+    grid.BackgroundTransparency = 1
+    local lay = Instance.new("UIGridLayout", grid)
+    lay.CellSize = UDim2.new(0.33, -6, 0, 78)
+    lay.CellPadding = UDim2.new(0, 6, 0, 6)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local selectedStroke = nil
+    for i, w in ipairs(BUILTIN_WALLS) do
+        local card = Instance.new("ImageButton", grid)
+        card.Name = "WallPreset_" .. i
+        card.BackgroundColor3 = COLOR_SIDEBAR
+        card.Image = ""
+        card.ScaleType = Enum.ScaleType.Crop
+        card.AutoButtonColor = true
+        card.LayoutOrder = i
+        addCorner(card, 8)
+        local st = Instance.new("UIStroke", card)
+        st.Color = COLOR_STROKE
+        st.Thickness = 1.2
+        st.Transparency = 0.2
+        local nameLbl = Instance.new("TextLabel", card)
+        nameLbl.Size = UDim2.new(1, 0, 0, 18)
+        nameLbl.Position = UDim2.new(0, 0, 1, -18)
+        nameLbl.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        nameLbl.BackgroundTransparency = 0.45
+        nameLbl.Text = w.name
+        nameLbl.TextColor3 = Color3.new(1, 1, 1)
+        nameLbl.Font = BOLD_FONT
+        nameLbl.TextSize = 11
+        -- превью в фоне
+        task.spawn(function()
+            local asset = resolveImageForGui(w.url)
+            if asset and asset ~= "" and card.Parent then
+                card.Image = asset
+            end
+        end)
+        card.MouseButton1Click:Connect(function()
+            Settings.WallpaperUrl = w.url
+            wallBox.Text = w.url
+            -- сброс обводок
+            for _, ch in ipairs(grid:GetChildren()) do
+                if ch:IsA("ImageButton") then
+                    local s = ch:FindFirstChildOfClass("UIStroke")
+                    if s then s.Color = COLOR_STROKE s.Thickness = 1.2 end
+                end
+            end
+            st.Color = COLOR_TITLE
+            st.Thickness = 2.2
+            task.spawn(function()
+                local ok = false
+                if _G.PixelApplyWallpaper then
+                    ok = _G.PixelApplyWallpaper() == true
+                end
+                if PushMessage then
+                    PushMessage("Wallpaper", ok and (w.name .. " OK") or (w.name .. " fail"), 2)
+                end
+            end)
+        end)
+    end
+end
 do
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -8, 0, 40)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = "Косметика отключена"
-    lbl.TextColor3 = COLOR_TEXT_MUTED
-    lbl.Font = MAIN_FONT
-    lbl.TextSize = 13
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = VisCosmetics
+    local t = Instance.new("TextLabel", VisSound)
+    t.Size = UDim2.new(1, -8, 0, 22)
+    t.BackgroundTransparency = 1
+    t.Text = "Kill Sounds"
+    t.TextColor3 = COLOR_TITLE
+    t.Font = BOLD_FONT
+    t.TextSize = 14
+    t.TextXAlignment = Enum.TextXAlignment.Left
+
+    createToggle(VisSound, "Kill Sound", "KillSoundEnabled")
+
+    local row = Instance.new("Frame", VisSound)
+    row.Size = UDim2.new(1, -8, 0, 150)
+    row.BackgroundTransparency = 1
+
+    -- LEFT: add id
+    local left = Instance.new("Frame", row)
+    left.Size = UDim2.new(0.48, 0, 1, 0)
+    left.BackgroundColor3 = COLOR_SIDEBAR
+    left.BackgroundTransparency = 0.2
+    addCorner(left, 8)
+    local lTitle = Instance.new("TextLabel", left)
+    lTitle.Size = UDim2.new(1, -10, 0, 20)
+    lTitle.Position = UDim2.new(0, 6, 0, 4)
+    lTitle.BackgroundTransparency = 1
+    lTitle.Text = "Add Sound ID"
+    lTitle.TextColor3 = COLOR_TEXT
+    lTitle.Font = BOLD_FONT
+    lTitle.TextSize = 12
+    lTitle.TextXAlignment = Enum.TextXAlignment.Left
+    local idBox = Instance.new("TextBox", left)
+    idBox.Size = UDim2.new(1, -12, 0, 28)
+    idBox.Position = UDim2.new(0, 6, 0, 28)
+    idBox.BackgroundColor3 = COLOR_CARD_BG
+    idBox.PlaceholderText = "rbxassetid / numbers"
+    idBox.Text = ""
+    idBox.TextColor3 = COLOR_TEXT
+    idBox.Font = MAIN_FONT
+    idBox.TextSize = 12
+    idBox.ClearTextOnFocus = false
+    addCorner(idBox, 6)
+    local nameBox = Instance.new("TextBox", left)
+    nameBox.Size = UDim2.new(1, -12, 0, 26)
+    nameBox.Position = UDim2.new(0, 6, 0, 62)
+    nameBox.BackgroundColor3 = COLOR_CARD_BG
+    nameBox.PlaceholderText = "Name (optional)"
+    nameBox.Text = ""
+    nameBox.TextColor3 = COLOR_TEXT
+    nameBox.Font = MAIN_FONT
+    nameBox.TextSize = 12
+    nameBox.ClearTextOnFocus = false
+    addCorner(nameBox, 6)
+
+    -- RIGHT: list
+    local right = Instance.new("ScrollingFrame", row)
+    right.Size = UDim2.new(0.5, -4, 1, 0)
+    right.Position = UDim2.new(0.5, 4, 0, 0)
+    right.BackgroundColor3 = COLOR_SIDEBAR
+    right.BackgroundTransparency = 0.2
+    right.ScrollBarThickness = 4
+    right.CanvasSize = UDim2.new(0, 0, 0, 0)
+    right.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    addCorner(right, 8)
+    local rLay = Instance.new("UIListLayout", right)
+    rLay.Padding = UDim.new(0, 3)
+    rLay.SortOrder = Enum.SortOrder.LayoutOrder
+    local rPad = Instance.new("UIPadding", right)
+    rPad.PaddingTop = UDim.new(0, 4)
+    rPad.PaddingLeft = UDim.new(0, 4)
+    rPad.PaddingRight = UDim.new(0, 4)
+
+    local function refreshKSList()
+        for _, c in ipairs(right:GetChildren()) do
+            if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
+        end
+        for i, item in ipairs(killSoundList) do
+            local b = Instance.new("TextButton", right)
+            b.Size = UDim2.new(1, -4, 0, 24)
+            b.BackgroundColor3 = (i == currentKillSoundIndex) and COLOR_TAB_ACTIVE or COLOR_CARD_BG
+            b.Text = string.format("%d. %s", i, tostring(item.name or item.id))
+            b.TextColor3 = COLOR_TEXT
+            b.Font = MAIN_FONT
+            b.TextSize = 11
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            addCorner(b, 5)
+            b.MouseButton1Click:Connect(function()
+                currentKillSoundIndex = i
+                Settings.LastKillSoundIndex = i
+                if PlayKillSound then PlayKillSound(i) end
+                refreshKSList()
+            end)
+        end
+    end
+
+    local addBtn = Instance.new("TextButton", left)
+    addBtn.Size = UDim2.new(1, -12, 0, 28)
+    addBtn.Position = UDim2.new(0, 6, 0, 96)
+    addBtn.BackgroundColor3 = COLOR_ACCENT
+    addBtn.Text = "Add"
+    addBtn.TextColor3 = Color3.new(1, 1, 1)
+    addBtn.Font = BOLD_FONT
+    addBtn.TextSize = 12
+    addCorner(addBtn, 6)
+    addBtn.MouseButton1Click:Connect(function()
+        local raw = tostring(idBox.Text or ""):gsub("%s+", "")
+        if raw == "" then return end
+        local id = raw
+        if raw:match("^%d+$") then id = "rbxassetid://" .. raw end
+        if not string.find(id, "rbxasset", 1, true) and not string.find(id, "http", 1, true) then
+            id = "rbxassetid://" .. raw
+        end
+        local nm = tostring(nameBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if nm == "" then nm = "Sound " .. tostring(#killSoundList + 1) end
+        table.insert(killSoundList, { name = nm, id = id })
+        currentKillSoundIndex = #killSoundList
+        Settings.LastKillSoundIndex = currentKillSoundIndex
+        idBox.Text = ""
+        nameBox.Text = ""
+        refreshKSList()
+        if PushMessage then PushMessage("KillSound", "Added " .. nm, 1.5) end
+    end)
+
+    task.defer(refreshKSList)
 end
 
 createToggle(VisFX, "Fullbright", "Fullbright", function()
@@ -5149,7 +6048,7 @@ createToggle(VisFX, "Fullbright", "Fullbright", function()
         Lighting.GlobalShadows = OriginalLighting.GlobalShadows
     end
 end)
-createToggle(VisHUD, "Watermark", "Watermark")
+-- Watermark moved to VisFX
 createToggle(VisESP, "Client Users ESP", "ClientUsersESP", function()
     if not Settings.ClientUsersESP then clearAllOverheadTags() end
 end)
@@ -5187,68 +6086,6 @@ do
     end)
 end
 
--- Wallpaper URL + Применить
-do
-    local row = Instance.new("Frame", ExtraContainer)
-    row.Size = UDim2.new(1, -8, 0, 88)
-    row.BackgroundColor3 = COLOR_SIDEBAR
-    row.BackgroundTransparency = 0.3
-    addCorner(row, 8)
-    local lbl = Instance.new("TextLabel", row)
-    lbl.Size = UDim2.new(1, -12, 0, 18)
-    lbl.Position = UDim2.new(0, 6, 0, 4)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = "Wallpaper URL (png/jpg прямая ссылка)"
-    lbl.TextColor3 = COLOR_TEXT_MUTED
-    lbl.Font = MAIN_FONT
-    lbl.TextSize = 11
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    local box = Instance.new("TextBox", row)
-    box.Size = UDim2.new(1, -12, 0, 26)
-    box.Position = UDim2.new(0, 6, 0, 24)
-    box.BackgroundColor3 = COLOR_CARD_BG
-    box.Text = tostring(Settings.WallpaperUrl or "")
-    box.PlaceholderText = "https://..."
-    box.TextColor3 = COLOR_TEXT
-    box.Font = MAIN_FONT
-    box.TextSize = 12
-    box.ClearTextOnFocus = false
-    addCorner(box, 6)
-    local function doApplyWall()
-        Settings.WallpaperUrl = tostring(box.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-        pcall(function()
-            if SaveConfig then SaveConfig() end
-        end)
-        local ok = false
-        pcall(function()
-            if _G.PixelApplyWallpaper then
-                ok = _G.PixelApplyWallpaper() == true
-            end
-        end)
-        if PushMessage then
-            if ok then
-                PushMessage("Wallpaper", "Обои применены ✓", 2)
-            else
-                PushMessage("Wallpaper", "Не загрузилось. Нужен прямой URL png/jpg + writefile", 3)
-            end
-        end
-    end
-    box.FocusLost:Connect(function(enter)
-        if enter then doApplyWall() end
-    end)
-    local applyBtn = Instance.new("TextButton", row)
-    applyBtn.Size = UDim2.new(1, -12, 0, 28)
-    applyBtn.Position = UDim2.new(0, 6, 0, 54)
-    applyBtn.BackgroundColor3 = COLOR_ACCENT
-    applyBtn.Text = "Применить обои"
-    applyBtn.TextColor3 = COLOR_TEXT
-    applyBtn.Font = BOLD_FONT
-    applyBtn.TextSize = 13
-    addCorner(applyBtn, 8)
-    applyBtn.MouseButton1Click:Connect(doApplyWall)
-end
-
--- REMOVED duplicate Target Skill Chat (now in Trolling)
 
 createButton("💀 Force Suicide / Reset", ExtraContainer, function()
     if Actions.Suicide then Actions.Suicide() end
@@ -7431,8 +8268,9 @@ MusicHUDFrame.Size = UDim2.new(0, 260, 0, 110)
 MusicHUDFrame.Position = UDim2.new(0, 10, 1, -125)
 MusicHUDFrame.BackgroundColor3 = COLOR_CARD_BG
 MusicHUDFrame.Parent = HudGui
+MusicHUDFrame.Visible = false -- music HUD removed
 addCorner(MusicHUDFrame, 12)
-MakeDraggable(MusicHUDFrame, nil, "MusicHUD")
+-- MakeDraggable removed for music
 
 local MusicTitle = Instance.new("TextLabel", MusicHUDFrame)
 MusicTitle.Size = UDim2.new(1, -20, 0, 18)
@@ -7930,49 +8768,15 @@ end))
 -- 11. ЛОГИКА МУЗЫКИ И ВЫГРУЗКИ
 -- ========================================================
 local function UpdateMusicHUD()
-    if currentPlayingIndex > 0 and musicList[currentPlayingIndex] then
-        MusicTitle.Text = "Music: " .. musicList[currentPlayingIndex].name
-    else
-        MusicTitle.Text = "Music: Stopped"
-    end
+    -- music removed
 end
 
 local function PlayMusic(index, forceChange)
-    if musicList[index] then
-        if currentPlayingIndex == index and not forceChange then
-            if backgroundSound.IsPlaying then
-                backgroundSound:Pause()
-            else
-                if backgroundSound.IsPaused then
-                    backgroundSound:Resume()
-                else
-                    backgroundSound:Play()
-                end
-            end
-        else
-            currentPlayingIndex = index
-            backgroundSound:Stop()
-            local id = musicList[index].id
-            if not string.find(tostring(id), "rbxassetid://") then
-                id = "rbxassetid://" .. tostring(id)
-            end
-            backgroundSound.SoundId = id
-            backgroundSound.Volume = currentVolume
-            backgroundSound.Looped = isLooped
-            -- Ждём загрузки звука
-            task.spawn(function()
-                local t0 = tick()
-                while not backgroundSound.IsLoaded and tick() - t0 < 5 do
-                    task.wait(0.1)
-                end
-                if currentPlayingIndex == index then
-                    backgroundSound:Play()
-                end
-            end)
-        end
-        SaveConfig()
-        UpdateMusicHUD()
-    end
+    -- music removed
+    pcall(function()
+        backgroundSound:Stop()
+        backgroundSound.Volume = 0
+    end)
 end
 
 local function RefreshMusicUI()
@@ -8126,8 +8930,7 @@ end)) end
 if OpenMusicMenuBtn then
     UnloadSystem:TrackConnection(OpenMusicMenuBtn.MouseButton1Click:Connect(function()
         if MusicWindow then
-            MusicWindow.Visible = not MusicWindow.Visible
-            if MusicWindow.Visible and RefreshMusicUI then RefreshMusicUI() end
+            MusicWindow.Visible = false -- music removed
         end
     end))
 end
@@ -8680,7 +9483,7 @@ UnloadSystem:TrackConnection(RunService.RenderStepped:Connect(function(dt)
     SkillHUDFrame.Visible = false
     KillstreakHUDFrame.Visible = false
     KsValueLabel.Text = tostring(Settings.Killstreak)
-    MusicHUDFrame.Visible = Settings.MusicHUD
+    MusicHUDFrame.Visible = false -- music removed
 
     if backgroundSound.IsPlaying or backgroundSound.TimePosition > 0 then
         local pos, len = backgroundSound.TimePosition, backgroundSound.TimeLength
@@ -9466,6 +10269,9 @@ do
     if ok then
         print("[PixelClient] UI loaded")
         pcall(function() PushMessage("Pixel Client", "Loaded", 2) end)
+        task.delay(0.6, function()
+            pcall(function() if PlayJoinSound then PlayJoinSound() end end)
+        end)
     else
         warn("[PixelClient] UI ERROR: ", err)
         pcall(function()
